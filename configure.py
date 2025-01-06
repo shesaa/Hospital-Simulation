@@ -1,0 +1,4 @@
+
+
+class Configure:
+    pass
