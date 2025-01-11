@@ -1,7 +1,6 @@
 from __future__ import annotations
 from abc import abstractmethod, ABC
 from enum import Enum
-from patient import PatientType
 from dataclasses import dataclass, field
 from typing import List, Type, Optional
 

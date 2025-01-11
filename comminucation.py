@@ -15,6 +15,7 @@ class RequestType(Enum):
 
 @dataclass
 class Request:
+    section_req : SectionType
     section_from: SectionType
     section_to: SectionType
     patient: Patient

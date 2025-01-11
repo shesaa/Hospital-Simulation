@@ -2,7 +2,7 @@ from abc import abstractmethod, ABC
 from enum import Enum
 from typing import List, Type, Optional
 from dataclasses import dataclass, field
-
+from base import SectionType
 
 class PatientType(Enum):
     ELECTIVE = "Elective"
@@ -19,11 +19,13 @@ class Patient:
     id: int
     patient_type: PatientType
     surgery_type: SurgeryType
+    section: SectionType
 
     def to_dict(self):
         return {
             "id": self.id,
             "patient_type": self.patient_type,
-            "surgery_type": self.surgery_type.value
+            "surgery_type": self.surgery_type.value,
+            "section": self.section
         }
     

@@ -17,6 +17,6 @@ class Distribiutions:
                                 p=[0.75, 0.25])[0]
     
     def generate_service_time(self, patient: Patient) -> float:
-        return 3.0 if patient.surgery_type == SurgeryType.SIMPLE else 5.0
+        return 10 if patient.section == SectionType.EMERGENCY else 5
 
 
