@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Hospital Simulation Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; }
+        canvas { border: 1px solid #000; }
+        .control-panel { margin-top: 20px; }
+        .control-panel div { margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Hospital Simulation Dashboard</h1>
+    <canvas id="dashboardCanvas" width="800" height="600"></canvas>
+
+    <div class="control-panel">
+        <h2>Control Panels</h2>
+        <div>
+            <h3>Emergency Section</h3>
+            <button onclick="controlSection('EMERGENCY', 'pause')">Pause</button>
+            <button onclick="controlSection('EMERGENCY', 'resume')">Resume</button>
+        </div>
+        <div>
+            <h3>Ward Section</h3>
+            <button onclick="controlSection('WARD', 'pause')">Pause</button>
+            <button onclick="controlSection('WARD', 'resume')">Resume</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('dashboardCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Define sections with positions and sizes
+        const sections = {
+            "EMERGENCY": { x: 50, y: 50, width: 300, height: 200 },
+            "WARD": { x: 450, y: 50, width: 300, height: 200 },
+            // Add more sections as needed
+        };
+
+        // Patients data
+        const patients = {
+            "EMERGENCY": [],
+            "WARD": []
+        };
+
+        // Draw sections
+        function drawSections() {
+            for (const [name, section] of Object.entries(sections)) {
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(section.x, section.y, section.width, section.height);
+                ctx.font = '16px Arial';
+                ctx.fillText(name, section.x + 10, section.y + 20);
+            }
+        }
+
+        // Draw patients as red circles
+        function drawPatients() {
+            for (const [section, patientList] of Object.entries(patients)) {
+                const sectionInfo = sections[section];
+                const padding = 10;
+                const radius = 5;
+                patientList.forEach((patient, index) => {
+                    const cols = Math.floor((sectionInfo.width - 2 * padding) / 20);
+                    const row = Math.floor(index / cols);
+                    const col = index % cols;
+                    const x = sectionInfo.x + padding + col * 20;
+                    const y = sectionInfo.y + padding + row * 20 + 30;
+                    ctx.beginPath();
+                    ctx.arc(x, y, radius, 0, 2 * Math.PI, false);
+                    ctx.fillStyle = 'red';
+                    ctx.fill();
+                    ctx.closePath();
+                });
+            }
+        }
+
+        // Clear and redraw the canvas
+        function render() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawSections();
+            drawPatients();
+        }
+
+        // Initialize WebSocket connection
+        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
+
+        socket.onopen = function(e) {
+            console.log("WebSocket connection established.");
+        };
+
+        socket.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            console.log("Received data:", data);
+            switch(data.type) {
+                case "enqueue":
+                    patients[data.section].push(data.patient);
+                    break;
+                case "start_serving":
+                    // Optionally, mark patient as being served
+                    break;
+                case "move":
+                    // Remove from 'from' section and add to 'to' section
+                    const fromSection = data.from;
+                    const toSection = data.to;
+                    const patientIndex = patients[fromSection].findIndex(p => p.id === data.patient.id);
+                    if (patientIndex !== -1) {
+                        patients[fromSection].splice(patientIndex, 1);
+                    }
+                    patients[toSection].push(data.patient);
+                    break;
+                case "discharge":
+                    const wardIndex = patients[data.section].findIndex(p => p.id === data.patient.id);
+                    if (wardIndex !== -1) {
+                        patients[data.section].splice(wardIndex, 1);
+                    }
+                    break;
+                case "state_update":
+                    // Optionally handle state updates
+                    break;
+                case "section_pause":
+                    // Optionally indicate section is paused
+                    console.log(`Section ${data.section} paused.`);
+                    break;
+                case "section_resume":
+                    // Optionally indicate section is resumed
+                    console.log(`Section ${data.section} resumed.`);
+                    break;
+                default:
+                    console.log("Unknown message type:", data.type);
+            }
+            render();
+        };
+
+        socket.onclose = function(event) {
+            console.log("WebSocket connection closed.");
+        };
+
+        socket.onerror = function(error) {
+            console.log("WebSocket error:", error);
+        };
+
+        // Function to send control messages
+        function controlSection(section, action) {
+            const message = {
+                type: "control",
+                section: section,
+                action: action
+            };
+            socket.send(JSON.stringify(message));
+        }
+
+        // Initial render
+        render();
+    </script>
+</body>
+</html>

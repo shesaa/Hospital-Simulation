@@ -8,8 +8,14 @@ from typing import List, Type, Optional
 
 class SectionType(Enum):
     OUTSIDE = "OUTSIDE"
+    PRE_SURGERY = "PRE_SURGERY"
     EMERGENCY = "EMERGENCY"
+    LABRATORY = "LABRATORY"
+    OPERATING_ROOMS = "OPERATING_ROOMS"
     WARD = "WARD"
+    ICU = "ICU"
+    CCU = "CCU"
+    RIP = "RIP"
 
 
 
