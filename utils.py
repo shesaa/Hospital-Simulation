@@ -83,7 +83,7 @@ class Distribiutions:
     def _generate_operating_rooms_service_time_(self, patient: Patient):
         if patient.surgery_type == SurgeryType.SIMPLE:
             return self.normal_dist(30.222215, 4.95765) / 60
-        elif patient.surgery_type == SurgeryType.MODERATE:
+        elif patient.surgery_type == SurgeryType.MEDIOCRE:
             return self.normal_dist(74.54242222222223, 9.950457667841523) /60
         else:  # Assuming this is for SurgeryType.COMPLEX
             return self.normal_dist(242.0312, 63.1162) /60
@@ -93,7 +93,7 @@ class Distribiutions:
         return PatientType.ELECTIVE if r < 0.25 else PatientType.NON_ELECTIVE
     
     def _generate_bedridden_time_(self, patient: Patient):
-        if patient.SectionType==SectionType.WARD:
+        if patient.section==SectionType.WARD:
             return self.exponential_dist(50)
         else:
             return self.exponential_dist(25)
@@ -154,13 +154,27 @@ class Distribiutions:
 
 
 
-# new_patient = Patient(
-#     id=1,
-#     patient_initial_type=PatientType.ELECTIVE,
-#     patient_type=PatientType.ELECTIVE,
-#     surgery_type=SurgeryType.MEDIOCRE,
-#     section= SectionType.OUTSIDE
-# )
+new_patient = Patient(
+    id=1,
+    patient_initial_type=PatientType.ELECTIVE,
+    patient_type=PatientType.ELECTIVE,
+    surgery_type=SurgeryType.MEDIOCRE,
+    section= SectionType.OUTSIDE
+)
 
 # a = Distribiutions()
-# a.complex_surgery_transfer_section()
+# print(a.generate_next_patient_time(patient_type=new_patient.patient_type))
+# print(a.generate_next_patient_type())
+# print(20* '*')
+# for i in SectionType:
+#     new_patient.section = i
+#     print(i)
+#     print(a.generate_service_time(new_patient))
+#     print(20* '*')
+
+# print(a.generate_next_patient_surgery_type())
+# print(a.complex_surgery_transfer_section())
+# print(a.mediocre_surgery_transfer_section())
+# print(a.successful_surgery())
+# print(a.need_for_resurgery_after_complex_surgery())
+# print(a.group_non_elective_entrance())

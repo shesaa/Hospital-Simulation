@@ -1,4 +1,7 @@
 from hospital_base import *
+import json
+
+
 
 @dataclass
 class SimulationStateData:
@@ -60,6 +63,9 @@ class Simulation:
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
+        # with open('state.json', "w") as _:
+        #     json.dump(simulation_state, _, indent=4)
+        print(simulation_state)
         print("[Simulation] Stopped.")
 
     async def run_simulation(self, duration: int):

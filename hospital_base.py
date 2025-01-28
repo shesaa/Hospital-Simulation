@@ -132,10 +132,12 @@ class Section(ABC):
             try:
                 if message.section_req == SectionType.LABRATORY:
                     # self.move_patient(patient=message.patient, target_section=message.section_to)
-                    sec_to_change = SectionType.EMERGENCY if message.patient.patient_type == PatientType.NON_ELECTIVE else SectionType.PRE_SURGERY
-                    simulation_state[sec_to_change.value]["entities"].append(message.patient)
-                    simulation_state[SectionType.LABRATORY.value]["entities"].remove(message.patient)
-                    return Response(request=message, status=ResponseStatus.SENT)
+                    # sec_to_change = SectionType.EMERGENCY if message.patient.patient_type == PatientType.NON_ELECTIVE else SectionType.PRE_SURGERY
+                    # simulation_state[sec_to_change.value]["entities"].append(message.patient)
+                    # simulation_state[SectionType.LABRATORY.value]["entities"].remove(message.patient)
+                    # return Response(request=message, status=ResponseStatus.SENT)
+                    new_message = Request(self.section_type, message.section_from, message.section_to, message.patient, _type_ = RequestType.SERVER_TO_CLIENT)
+                    return self.request_sender(message=new_message)
                 self.queue.put_nowait(message.patient)
                 print(f"[{self.section_type.value}] Patient {message.patient.id} added to queue.")
                 simulation_state[self.section_type.value]["queue"].append(message.patient)
@@ -145,54 +147,39 @@ class Section(ABC):
                 return Response(request=message, status=ResponseStatus.REJECTED)
         else:
             # Handling server to client requests (e.g., moving patient out)
-            # print(30*"%")
-            # print("Handling server to client requests (e.g., moving patient out)")
-            # print(self.section_type, "section_type")
-            # print(message.patient.section, "message.patient.section")
-            # print(message.section_req, "section_req")
-            # print(message.section_from, "section_from")
-            # print(message.section_to, "section_to")
-            # print(30*"%")
             if message.patient in self.entities:
-                # print("here4")
                 print(f"patient id {message.patient.id} to {message.section_to}")
                 self.move_patient(patient=message.patient, target_section=message.section_to)
-                # self.entities.remove(message.patient)
-                # print(f"[{self.section_type.value}] Patient {Patient.id} removed from entities.")
-                # simulation_state[self.section_type.value]["entities"].remove(message.patient)
                 return Response(request=message, status=ResponseStatus.SENT)
             print(f"[{self.section_type.value}] Patient not found in entities.")
             return Response(request=message, status=ResponseStatus.REJECTED)
 
     async def request_sender(self, message: Request) -> Response:
-        # print("here3")
         if message._type_ == RequestType.CLIENT_TO_SERVER:
             section = Section.__instances__.get(message.section_to.value)
         else:
             section = Section.__instances__.get(message.section_from.value)
-        # print(section.value)
         if not section:
             print(f"Section {message.section_to.value} does not exist.")
             return Response(request=message, status=ResponseStatus.REJECTED)
-        # print("here")
         response = section.request_handler(message)
         # Update simulation_state
-        if response.status == ResponseStatus.ACCEPTED:
-            # self.simulation_state[self.section_type.value]["queue"].append(message.patient)
-            pass
-        elif response.status == ResponseStatus.REJECTED:
-            pass  # Handle rejection if needed
-        elif response.status == ResponseStatus.SENT:
-            # Move patient to target section
-            target_section = Section.__instances__.get(message.section_to.value)
-            if target_section:
-                # message.patient.section = target_section.section_type
-                # target_section.entities.append(message.patient)
-                # self.simulation_state[self.section_type.value]["entities"].remove(message.patient)
-                # self.simulation_state[message.section_to.value]["entities"].append(message.patient)
-                # self.simulation_state[self.section_type.value]["entities"].append(message.patient)
-                # self.move_patient(patient=message.patient, target_section=target_section)
-                pass
+        # if response.status == ResponseStatus.ACCEPTED:
+        #     # self.simulation_state[self.section_type.value]["queue"].append(message.patient)
+        #     pass
+        # elif response.status == ResponseStatus.REJECTED:
+        #     pass  # Handle rejection if needed
+        # elif response.status == ResponseStatus.SENT:
+        #     # Move patient to target section
+        #     target_section = Section.__instances__.get(message.section_to.value)
+        #     if target_section:
+        #         # message.patient.section = target_section.section_type
+        #         # target_section.entities.append(message.patient)
+        #         # self.simulation_state[self.section_type.value]["entities"].remove(message.patient)
+        #         # self.simulation_state[message.section_to.value]["entities"].append(message.patient)
+        #         # self.simulation_state[self.section_type.value]["entities"].append(message.patient)
+        #         # self.move_patient(patient=message.patient, target_section=target_section)
+        #         pass
         return response
 
     async def run(self, distrib: Distribiutions):
@@ -288,19 +275,12 @@ class Section(ABC):
                 response = await self.request_sender(move_request)
                 is_moved = await self.wait_for_section(patient=patient, specific_section=section_to)
                 if is_moved:
-                    print(f"[{self.section_type.value}] Worker {worker_id} moved patient {patient.id} to Ward.")
+                    print(f"[{self.section_type.value}] Worker {worker_id} moved patient {patient.id} to {section_to.value}.")
                 
                 if section_to== SectionType.LABRATORY:
                     print(f"[{self.section_type.value}] Worker {worker_id} waiting for patient {patient.id} to come back from {section_to.value}.")
                     is_backed = await self.wait_for_section(patient=patient, specific_section=self.section_type)
                     print(f"[{self.section_type.value}] patient {patient.id} is now backed from {section_to}!.")
-                # elif self.section_type == SectionType.WARD:
-                #     # Handle discharge or other logic
-                #     print(f"[{self.section_type.value}] Patient {patient.id} discharged.")
-                #     # Remove patient from ward
-                #     self.entities.remove(patient)
-                #     simulation_state[self.section_type.value]["entities"].remove(patient)
-                #     patient.section = SectionType.OUTSIDE
                     
                 if self.section_type == SectionType.OPERATING_ROOMS:
                     print(f"[{self.section_type.value}] Worker {worker_id} is preparing surgery room for next patient...")
@@ -332,40 +312,32 @@ class Section(ABC):
         '''
         Moves a patient to the target section.
         '''
-        # print("state BEFORE update")
-        # print(simulation_state)
-        # Update patient's section
 
-        self.entities.remove(patient)
         target_section_instance = Section.__instances__.get(target_section.value)
 
-        condition1 = not target_section_instance == SectionType.LABRATORY
-        condition2 = not (target_section_instance in [SectionType.EMERGENCY, SectionType.PRE_SURGERY] and  patient.tested_at_lab)
+        condition1 = not target_section_instance.section_type == SectionType.LABRATORY
+        condition2 = not (target_section_instance.section_type in [SectionType.EMERGENCY, SectionType.PRE_SURGERY] and  patient.tested_at_lab)
         
-        if condition1:
+        if condition1: #ok
+            self.entities.remove(patient)
             simulation_state[self.section_type.value]["entities"].remove(patient)
         if condition2:
             simulation_state[target_section.value]["queue"].remove(patient)
             
         patient.section = target_section
-
-        target_section_instance.entities.append(patient)
         
         if condition2:
+            target_section_instance.entities.append(patient)
             simulation_state[target_section.value]["entities"].append(patient)
-        # print("hahaha")
 
         print(f"[{self.section_type.value}] Patient {patient.id} moved to {target_section.value}")
-        # print("state AFTER update")
-        # print(simulation_state)
+
 
     async def wait_for_section(self, patient: Patient, specific_section: SectionType, timeout: float = 100):
         '''
         Waits until the patient's section matches the specific section or until timeout.
         '''
-        # print("error")
         start_time = time.time()
-        # print("error2")
         while patient.section != specific_section:
             if (time.time() - start_time) > timeout:
                 print(f"Timeout: Patient {patient.id} did not move to {specific_section.value} within {timeout} seconds.")
@@ -574,16 +546,13 @@ class ClientGeneratorForHospital(Section):
     async def run(self):
         print("[ClientGenerator] Started.")
         while self.running:
-            print("1")
             next_patients_type = self.dist.generate_next_patient_type()
-            print("2", next_patients_type)
             next_patient_interval = self.dist.generate_next_patient_time(patient_type=next_patients_type)
-            print("3",next_patient_interval)
             list_of_patients = self.dist.generate_next_group_of_patients(next_patients_type)
-            print("4", list_of_patients)
-            print(f"[ClientGenerator] New patients in {next_patient_interval}")
+            print(f"[ClientGenerator] New patients in {next_patient_interval} with len {len(list_of_patients)} and type: {next_patients_type.value}")
             
-            await asyncio.sleep(next_patient_interval * 3600 / SIMULATION_SPEED)  # Simulate patient arrival interval
+            # Simulate patient arrival interval
+            await asyncio.sleep(next_patient_interval * 3600 / SIMULATION_SPEED)
 
             for p in list_of_patients:
                 self.entities.append(p)
@@ -599,10 +568,8 @@ class ClientGeneratorForHospital(Section):
                     patient=p,
                     _type_=RequestType.CLIENT_TO_SERVER
                 )
-                response = self.targeted_hospital.emergency.request_handler(message=request)
-            # response = await self.request_sender(message=request)
-            # if response.status == ResponseStatus.ACCEPTED:
-            #     simulation_state["EMERGENCY"]["queue"].append(new_patient)
+                # response = self.targeted_hospital.emergency.request_handler(message=request)
+                response = await self.request_sender(message=request)
                 print(f"[ClientGenerator] Sent entry request for patient: {p.id} - Response: {response.status.value}")
 
     async def stop(self):
