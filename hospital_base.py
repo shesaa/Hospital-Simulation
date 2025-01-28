@@ -68,7 +68,7 @@ class Section(ABC):
     _section_name_ = ""
     dist = Distribiutions()
 
-    def __init__(self, section_type: SectionType, capacity: Capacity, simulation_state: Dict) -> None:
+    def __init__(self, section_type: SectionType, capacity: Capacity) -> None:
         self.section_type = section_type
         self.capacity = capacity
 
@@ -76,11 +76,11 @@ class Section(ABC):
         self.queue = asyncio.Queue(maxsize=capacity.queue) if capacity.queue is not None else asyncio.Queue()
         
         self.running = True
+        self.paused = False
         self.pause_event = asyncio.Event()
         self.pause_event.set()  # Initially not paused
         self.workers: List[asyncio.Task] = []
         
-        self.simulation_state = simulation_state
         Section.__instances__[self.section_type.value] = self
 
         self.queue_lock = asyncio.Lock()
@@ -125,22 +125,18 @@ class Section(ABC):
 
         return (type_priority, entry_time)
 
-    def request_handler(self, message: Request) -> Response:
+    async def request_handler(self, message: Request) -> Response:
+        print(30* "--")
         print(f"[{self.section_type.value}] Message received from {message.section_req.value} / message : {message.section_from.value} to {message.section_to.value}/ type: {message._type_} / patient id : {message.patient.id}")
         if message._type_ == RequestType.CLIENT_TO_SERVER:
             # Handling client to server requests (e.g., adding to queue)
             try:
                 if message.section_req == SectionType.LABRATORY:
-                    # self.move_patient(patient=message.patient, target_section=message.section_to)
-                    # sec_to_change = SectionType.EMERGENCY if message.patient.patient_type == PatientType.NON_ELECTIVE else SectionType.PRE_SURGERY
-                    # simulation_state[sec_to_change.value]["entities"].append(message.patient)
-                    # simulation_state[SectionType.LABRATORY.value]["entities"].remove(message.patient)
-                    # return Response(request=message, status=ResponseStatus.SENT)
                     new_message = Request(self.section_type, message.section_from, message.section_to, message.patient, _type_ = RequestType.SERVER_TO_CLIENT)
-                    return self.request_sender(message=new_message)
+                    response = await self.request_sender(message=new_message)
+                    return response
                 self.queue.put_nowait(message.patient)
                 print(f"[{self.section_type.value}] Patient {message.patient.id} added to queue.")
-                simulation_state[self.section_type.value]["queue"].append(message.patient)
                 return Response(request=message, status=ResponseStatus.ACCEPTED)
             except asyncio.QueueFull:
                 print(f"[{self.section_type.value}] Queue full. Patient {message.patient.id} rejected.")
@@ -155,6 +151,8 @@ class Section(ABC):
             return Response(request=message, status=ResponseStatus.REJECTED)
 
     async def request_sender(self, message: Request) -> Response:
+        if message.section_req == SectionType.EMERGENCY and message.section_from== SectionType.LABRATORY:
+            print("hah3")
         if message._type_ == RequestType.CLIENT_TO_SERVER:
             section = Section.__instances__.get(message.section_to.value)
         else:
@@ -162,24 +160,7 @@ class Section(ABC):
         if not section:
             print(f"Section {message.section_to.value} does not exist.")
             return Response(request=message, status=ResponseStatus.REJECTED)
-        response = section.request_handler(message)
-        # Update simulation_state
-        # if response.status == ResponseStatus.ACCEPTED:
-        #     # self.simulation_state[self.section_type.value]["queue"].append(message.patient)
-        #     pass
-        # elif response.status == ResponseStatus.REJECTED:
-        #     pass  # Handle rejection if needed
-        # elif response.status == ResponseStatus.SENT:
-        #     # Move patient to target section
-        #     target_section = Section.__instances__.get(message.section_to.value)
-        #     if target_section:
-        #         # message.patient.section = target_section.section_type
-        #         # target_section.entities.append(message.patient)
-        #         # self.simulation_state[self.section_type.value]["entities"].remove(message.patient)
-        #         # self.simulation_state[message.section_to.value]["entities"].append(message.patient)
-        #         # self.simulation_state[self.section_type.value]["entities"].append(message.patient)
-        #         # self.move_patient(patient=message.patient, target_section=target_section)
-        #         pass
+        response = await section.request_handler(message)
         return response
 
     async def run(self, distrib: Distribiutions):
@@ -227,13 +208,14 @@ class Section(ABC):
             await self.pause_event.wait()  # Wait if paused
             try:
                 # patient = await self.queue.get()
+                # print(f"[{self.section_type.value}] Worker {worker_id} looking for new patient.")
                 patient = await self.get_next_patient()
                 if patient is None:
                     # No patient to process, wait briefly
                     await asyncio.sleep(0.1 / SIMULATION_SPEED)
                     continue
 
-                print("----------"* 6 , "Block")
+                # print("----------"* 6 , "Block")
                 
                 move_request = Request(
                         section_req= self.section_type,
@@ -242,23 +224,22 @@ class Section(ABC):
                         patient=patient,
                         _type_=RequestType.SERVER_TO_CLIENT
                     )
-                
+                print(f"[{self.section_type.value}] Worker {worker_id} requesting patient {patient.id} locating in {patient.section.value}.")
                 response = await self.request_sender(move_request)
-                print("block_time:", (time.time()- st)/ SIMULATION_SPEED, "hours")
+                # print("block_time:", (time.time()- st)/ SIMULATION_SPEED, "hours")
 
-                print(f"patient {patient.id} 's moved from queue into the {self.section_type.value} entities")
+                print(f"[{self.section_type.value}] patient {patient.id} 's moved from queue into the {self.section_type.value} entities")
                 print(f"[{self.section_type.value}] Worker {worker_id} serving patient: {patient.id}")
 
                 # Simulate serving time
                 serve_time = distrib.generate_service_time(patient)
-                print(f"serve_time for patient {patient.id}: {serve_time}")
+                print(f"[{self.section_type.value}] serve_time for patient {patient.id}: {serve_time}")
 
                 s = time.time()
                 patient.service_start_time = (s - st) * 3600 / SIMULATION_SPEED
 
                 await asyncio.shield(asyncio.sleep(serve_time * 3600 / SIMULATION_SPEED))
-                print(f"[{self.section_type.value}] Worker {worker_id} finished serving patient: {patient.id}")
-                print("duration :", (time.time() - s)* 3600/ SIMULATION_SPEED, "hours")
+                print(f"[{self.section_type.value}] Worker {worker_id} finished serving patient: {patient.id} in", (time.time() - s)* 3600/ SIMULATION_SPEED, "hours")
 
                 if self.section_type == SectionType.LABRATORY:
                     patient.tested_at_lab = True
@@ -286,7 +267,7 @@ class Section(ABC):
                     print(f"[{self.section_type.value}] Worker {worker_id} is preparing surgery room for next patient...")
                     await asyncio.shield(asyncio.sleep((1/6) * 3600 / SIMULATION_SPEED))
                     print(f"[{self.section_type.value}] Worker {worker_id} preparing surgery room DONE!")
-
+                print(f"[{self.section_type.value}] Worker {worker_id} task done (serving patient {patient.id})")
                 self.queue.task_done()
             except asyncio.CancelledError:
                 print(f"[{self.section_type.value}] Worker {worker_id} cancelled.")
@@ -311,24 +292,40 @@ class Section(ABC):
     def move_patient(self, patient: Patient, target_section: SectionType):
         '''
         Moves a patient to the target section.
+        A to B
         '''
 
+        # B instance
         target_section_instance = Section.__instances__.get(target_section.value)
 
-        condition1 = not target_section_instance.section_type == SectionType.LABRATORY
-        condition2 = not (target_section_instance.section_type in [SectionType.EMERGENCY, SectionType.PRE_SURGERY] and  patient.tested_at_lab)
-        
-        if condition1: #ok
-            self.entities.remove(patient)
-            simulation_state[self.section_type.value]["entities"].remove(patient)
-        if condition2:
-            simulation_state[target_section.value]["queue"].remove(patient)
-            
+        # if B is labratory
+        condition1 = target_section_instance.section_type == SectionType.LABRATORY
+        # if A is labratory
+        condition2 = (target_section_instance.section_type in [SectionType.EMERGENCY, SectionType.PRE_SURGERY] and  patient.tested_at_lab)
+        if condition2 and not self.section_type== SectionType.LABRATORY:
+            print("there is a logical bug here")
+
+        # Firstly
+        target_section_instance.entities.append(patient)
         patient.section = target_section
+
+        # Secondly
+        if not condition1:
+            self.entities.remove(patient)
+
+        # Finally
+        # deleting patient from B queue
+
+        # if condition1: #ok
+        #     self.entities.remove(patient)
+        #     # simulation_state[self.section_type.value]["entities"].remove(patient)
+        # if condition2:
+        #     # simulation_state[target_section.value]["queue"].remove(patient)
+            
         
-        if condition2:
-            target_section_instance.entities.append(patient)
-            simulation_state[target_section.value]["entities"].append(patient)
+        # if condition2:
+        #     target_section_instance.entities.append(patient)
+        #     # simulation_state[target_section.value]["entities"].append(patient)
 
         print(f"[{self.section_type.value}] Patient {patient.id} moved to {target_section.value}")
 
@@ -338,6 +335,8 @@ class Section(ABC):
         Waits until the patient's section matches the specific section or until timeout.
         '''
         start_time = time.time()
+        if specific_section == self.section_type:
+            print(f"[{self.section_type.value}] Waiting to patient {patient.id} come back from {patient.section.value}")
         while patient.section != specific_section:
             if (time.time() - start_time) > timeout:
                 print(f"Timeout: Patient {patient.id} did not move to {specific_section.value} within {timeout} seconds.")
@@ -388,8 +387,8 @@ class Section(ABC):
 class Hospital:
     class Emergency(Section):
         _section_name_ = SectionType.EMERGENCY.value
-        def __init__(self, capacity: Capacity, simulation_state: Dict) -> None:
-            super().__init__(SectionType.EMERGENCY, capacity, simulation_state)
+        def __init__(self, capacity: Capacity) -> None:
+            super().__init__(SectionType.EMERGENCY, capacity)
         
         def decide_next_section(self, patient: Patient):
             next_section_type = SectionType.LABRATORY
@@ -405,8 +404,8 @@ class Hospital:
 
     class Ward(Section):
         _section_name_ = SectionType.WARD.value
-        def __init__(self, capacity: Capacity, simulation_state: Dict) -> None:
-            super().__init__(SectionType.WARD, capacity, simulation_state)
+        def __init__(self, capacity: Capacity) -> None:
+            super().__init__(SectionType.WARD, capacity)
         
         def decide_next_section(self, patient: Patient):
             next_section_type = SectionType.OUTSIDE
@@ -419,8 +418,8 @@ class Hospital:
 
     class CCU(Section):
         _section_name_ = SectionType.CCU.value
-        def __init__(self, capacity: Capacity, simulation_state: Dict) -> None:
-            super().__init__(SectionType.CCU, capacity, simulation_state)
+        def __init__(self, capacity: Capacity) -> None:
+            super().__init__(SectionType.CCU, capacity)
 
         def decide_next_section(self, patient: Patient):
             next_section_type = SectionType.OUTSIDE
@@ -435,8 +434,8 @@ class Hospital:
 
     class ICU(Section):
         _section_name_ = SectionType.ICU.value
-        def __init__(self, capacity: Capacity, simulation_state: Dict) -> None:
-            super().__init__(SectionType.ICU, capacity, simulation_state)
+        def __init__(self, capacity: Capacity) -> None:
+            super().__init__(SectionType.ICU, capacity)
 
         def decide_next_section(self, patient: Patient):
             next_section_type = SectionType.OUTSIDE
@@ -451,8 +450,8 @@ class Hospital:
 
     class Labratory(Section):
         _section_name_ = SectionType.LABRATORY.value
-        def __init__(self, capacity: Capacity, simulation_state: Dict) -> None:
-            super().__init__(SectionType.LABRATORY, capacity, simulation_state)
+        def __init__(self, capacity: Capacity) -> None:
+            super().__init__(SectionType.LABRATORY, capacity)
 
         def decide_next_section(self, patient: Patient):
             next_section_type = SectionType.PRE_SURGERY
@@ -467,8 +466,8 @@ class Hospital:
 
     class PreSurgery(Section):
         _section_name_ = SectionType.PRE_SURGERY.value
-        def __init__(self, capacity: Capacity, simulation_state: Dict) -> None:
-            super().__init__(SectionType.PRE_SURGERY, capacity, simulation_state)
+        def __init__(self, capacity: Capacity) -> None:
+            super().__init__(SectionType.PRE_SURGERY, capacity)
 
         def decide_next_section(self, patient: Patient):
             next_section_type = SectionType.LABRATORY
@@ -483,8 +482,8 @@ class Hospital:
 
     class OperatingRooms(Section):
         _section_name_ = SectionType.OPERATING_ROOMS.value
-        def __init__(self, capacity: Capacity, simulation_state: Dict) -> None:
-            super().__init__(SectionType.OPERATING_ROOMS, capacity, simulation_state)
+        def __init__(self, capacity: Capacity) -> None:
+            super().__init__(SectionType.OPERATING_ROOMS, capacity)
 
         def decide_next_section(self, patient: Patient):
             if patient.surgery_type == SurgeryType.SIMPLE:
@@ -504,14 +503,14 @@ class Hospital:
                 await asyncio.sleep(1)
             
 
-    def __init__(self, simulation_state: Dict):
-        self.emergency = self.Emergency(SECTION_CAPACITIES.get(SectionType.EMERGENCY), simulation_state)
-        self.ward = self.Ward(SECTION_CAPACITIES.get(SectionType.WARD), simulation_state)
-        self.ccu = self.CCU(SECTION_CAPACITIES.get(SectionType.CCU), simulation_state)
-        self.icu = self.ICU(SECTION_CAPACITIES.get(SectionType.ICU), simulation_state)
-        self.operating_rooms = self.OperatingRooms(SECTION_CAPACITIES.get(SectionType.OPERATING_ROOMS), simulation_state)
-        self.labratory = self.Labratory(SECTION_CAPACITIES.get(SectionType.LABRATORY), simulation_state)
-        self.pre_surgery = self.PreSurgery(SECTION_CAPACITIES.get(SectionType.PRE_SURGERY), simulation_state)
+    def __init__(self):
+        self.emergency = self.Emergency(SECTION_CAPACITIES.get(SectionType.EMERGENCY), )
+        self.ward = self.Ward(SECTION_CAPACITIES.get(SectionType.WARD), )
+        self.ccu = self.CCU(SECTION_CAPACITIES.get(SectionType.CCU), )
+        self.icu = self.ICU(SECTION_CAPACITIES.get(SectionType.ICU), )
+        self.operating_rooms = self.OperatingRooms(SECTION_CAPACITIES.get(SectionType.OPERATING_ROOMS), )
+        self.labratory = self.Labratory(SECTION_CAPACITIES.get(SectionType.LABRATORY), )
+        self.pre_surgery = self.PreSurgery(SECTION_CAPACITIES.get(SectionType.PRE_SURGERY), )
 
         self.sections = {
             SectionType.EMERGENCY: self.emergency,
@@ -534,13 +533,12 @@ class Hospital:
         
 
 class ClientGeneratorForHospital(Section):
-    def __init__(self, targeted_hospital: Hospital, dist: Distribiutions, simulation_state: Dict):
+    def __init__(self, targeted_hospital: Hospital, dist: Distribiutions,):
         self.section_type = SectionType.OUTSIDE
         self.entities: List[Patient] = []
         self.targeted_hospital = targeted_hospital
         self.dist = dist
         self.running = True
-        self.simulation_state = simulation_state
         Section.__instances__[self.section_type.value] = self
 
     async def run(self):
@@ -556,7 +554,6 @@ class ClientGeneratorForHospital(Section):
 
             for p in list_of_patients:
                 self.entities.append(p)
-                simulation_state["OUTSIDE"]["entities"].append(p)
                 print(f"[ClientGenerator] Generated new patient: {p.id} (Type: {next_patients_type.value})")
                 # Create and send request
                 section_to = SectionType.EMERGENCY if p.patient_type == PatientType.NON_ELECTIVE else SectionType.PRE_SURGERY
@@ -587,7 +584,7 @@ class Nature:
     # class RIP(Section):
         # pass
 
-    def __init__(self, targeted_hospital: Hospital, dist: Distribiutions, simulation_state: Dict):
+    def __init__(self, targeted_hospital: Hospital, dist: Distribiutions,):
         self.running = True
 
 
