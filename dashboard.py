@@ -1,6 +1,6 @@
 from hospital_base import *
 import json
-
+import pandas as pd
 
 
 @dataclass
@@ -21,6 +21,7 @@ class Simulation:
         self.client_generator = ClientGeneratorForHospital(
             targeted_hospital=self.hospital,
             dist=self.dist,
+            capacity= SECTION_CAPACITIES.get(SectionType.OUTSIDE)
         )
         # self.state = simulation_state
         self.tasks: List[asyncio.Task] = []
@@ -100,37 +101,106 @@ class Simulation:
 # dashboard.py
 
 
+# dashboard.py
+
 import dash_bootstrap_components as dbc
 import plotly.graph_objs as go
 
+import threading
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Initialize the simulation
 simulation = Simulation()
 
 # Initialize Dash app with Bootstrap theme
-app_dash = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+app_dash = dash.Dash(__name__, external_stylesheets=[dbc.themes.CYBORG])
 app_dash.title = "Hospital Simulation Dashboard"
 
-def generate_section_graph(section_name):
+def generate_section_card(section_type):
+    """
+    Generates a Bootstrap card for a given section with nested tabs:
+    - Outer Tabs: "Patients" and "Worker Assignments"
+    - Inner Tabs within "Worker Assignments": One tab per worker
+    """
     return dbc.Card(
         [
-            dbc.CardHeader(html.H5(f"{section_name} Section", style={'color': '#3498db'})),
-            dbc.CardBody(
-                dcc.Graph(
-                    id=f'graph-{section_name.lower()}',
-                    config={'displayModeBar': False},
-                    style={
-                        'height': '300px', 
-                        'width': '100%', 
-                        'border': '2px solid #7f8c8d', 
-                        'borderRadius': '10px', 
-                        'backgroundColor': '#2c3e50'
-                    }
+            dbc.CardHeader(
+                dbc.Tabs(
+                    [
+                        dbc.Tab(label="Patients", tab_id="patients"),
+                        dbc.Tab(label="Worker Assignments", tab_id="workers"),
+                    ],
+                    id=f'tabs-outer-{section_type.value.lower()}',
+                    active_tab="patients",
                 )
+            ),
+            dbc.CardBody(
+                html.Div(id=f'content-outer-{section_type.value.lower()}')
             )
         ],
-        style={'width': '100%', 'margin': '10px'}
+        style={
+            'width': '100%', 
+            'margin': '10px',
+            'border': '2px solid #7f8c8d',
+            'borderRadius': '10px',
+            'backgroundColor': '#2c3e50'
+        }
     )
+
+def generate_worker_tabs(section_type):
+    """
+    Generates inner tabs for each worker within a section.
+    Each inner tab displays the patient the worker is serving.
+    """
+    section = simulation.hospital.get_section(section_type)
+    if not section or not section.worker_to_patient:
+        return dbc.Alert("No workers assigned to this section.", color="warning")
+    
+    workers = section.worker_to_patient.keys()
+    tabs = []
+    for worker_id in workers:
+        tab_id = f'worker-{section_type.value.lower()}-{worker_id}'
+        tabs.append(dbc.Tab(label=f"Worker {worker_id}", tab_id=tab_id))
+    
+    return dbc.Tabs(
+        tabs,
+        id=f'tabs-inner-{section_type.value.lower()}',
+        active_tab=f'worker-{section_type.value.lower()}-{list(workers)[0]}' if workers else None,
+    )
+
+def generate_worker_content(section_type, worker_id):
+    """
+    Generates the content for a worker's inner tab.
+    Displays the patient the worker is currently serving.
+    """
+    section = simulation.hospital.get_section(section_type)
+    if not section:
+        return dbc.Alert("Section not found.", color="danger")
+    
+    patient = section.worker_to_patient.get(worker_id)
+
+    if patient:
+        patient_info = {
+            "Patient ID": patient.id,
+            "Type": patient.patient_type.value,
+            "Surgery": patient.surgery_type.value
+        }
+        df = pd.DataFrame([patient_info])
+        return dbc.Table.from_dataframe(
+            df,
+            striped=True,
+            bordered=True,
+            hover=True,
+            dark=True,
+            responsive=True
+        )
+    else:
+        return dbc.Alert("No patient assigned.", color="info")
+
 
 # Define Dash layout using Dash Bootstrap Components
 app_dash.layout = dbc.Container(
@@ -154,12 +224,12 @@ app_dash.layout = dbc.Container(
                             [
                                 dbc.CardHeader(html.H5(f"{section_type.value} Section", className="text-center text-primary")),
                                 dbc.CardBody([
-                                    dbc.Button("Pause", id=f'pause-{section_type.value.lower()}', color="danger", className="me-2", n_clicks=0, disabled=False),
-                                    dbc.Button("Resume", id=f'resume-{section_type.value.lower()}', color="success", className="me-2", n_clicks=0, disabled=True),
+                                    dbc.Button("Pause", id=f'pause-{section_type.value.lower()}', color="danger", className="me-2 mb-2", n_clicks=0, disabled=False),
+                                    dbc.Button("Resume", id=f'resume-{section_type.value.lower()}', color="success", className="me-2 mb-2", n_clicks=0, disabled=True),
                                 ], className="text-center")
                             ],
                             className="mb-3",
-                            style={'backgroundColor': '#2c3e50', 'border': '1px solid #7f8c8d'}
+                            style={'backgroundColor': '#34495e', 'border': '1px solid #7f8c8d'}
                         ),
                         width=3
                     ) for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
@@ -201,15 +271,15 @@ app_dash.layout = dbc.Container(
             style={'backgroundColor': '#34495e', 'border': 'none'}
         ),
         
-        # Patient Visualization
+        # Patient Visualization with Inner Tabs
         dbc.Card(
             dbc.CardBody([
                 html.H3("Patient Visualization", className="text-center text-light"),
                 dbc.Row([
                     dbc.Col(
-                        generate_section_graph(section_type.value),
-                        width=6,
-                        md=4
+                        generate_section_card(section_type),
+                        width=12,
+                        md=6
                     ) for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
                 ])
             ]),
@@ -294,7 +364,7 @@ def update_graphs(n_intervals):
                     marker=dict(symbol='circle', size=10, color='blue'),
                     name='Queued Patient',
                     hoverinfo='text',
-                    text=f"ID: {patient.id}<br>Type: {patient.patient_type}<br>Surgery: {patient.surgery_type.value}"
+                    text=f"ID: {patient.id}<br>Type: {patient.patient_type.value}<br>Surgery: {patient.surgery_type.value}"
                 ))
             
             # Prepare data for serving patients (red)
@@ -307,7 +377,7 @@ def update_graphs(n_intervals):
                     marker=dict(symbol='circle', size=10, color='red'),
                     name='Serving Patient',
                     hoverinfo='text',
-                    text=f"ID: {patient.id}<br>Type: {patient.patient_type}<br>Surgery: {patient.surgery_type.value}"
+                    text=f"ID: {patient.id}<br>Type: {patient.patient_type.value}<br>Surgery: {patient.surgery_type.value}"
                 ))
             
             # Combine traces
@@ -351,6 +421,133 @@ def update_graphs(n_intervals):
             # If section not found, append an empty figure
             figures.append(go.Figure())
     return figures
+
+# Callback to update outer tab content (Patients or Worker Assignments)
+@app_dash.callback(
+    [
+        Output(f'content-outer-{section_type.value.lower()}', 'children') for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
+    ],
+    [
+        Input(f'tabs-outer-{section_type.value.lower()}', 'active_tab') for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
+    ] +
+    [
+        Input('interval-component', 'n_intervals')
+    ]
+)
+def update_outer_tabs(*args):
+    """
+    Updates the content within each section's outer tabs.
+    - If "Patients" tab is active, display the patient graph.
+    - If "Worker Assignments" tab is active, display inner tabs for workers.
+    """
+    n_intervals = args[-1]
+    active_tabs_outer = args[:-1]
+    contents = []
+    
+    for idx, section_type in enumerate(SectionType):
+        if section_type in [SectionType.OUTSIDE, SectionType.RIP]:
+            continue
+        active_tab = active_tabs_outer[idx]
+        if active_tab == "patients":
+            # Display the patient graph
+            contents.append(
+                dcc.Graph(
+                    id=f'graph-inner-{section_type.value.lower()}',
+                    figure=update_graphs(n_intervals)[idx],
+                    config={'displayModeBar': False},
+                    style={
+                        'height': '200px', 
+                        'width': '100%', 
+                        'border': '2px solid #7f8c8d', 
+                        'borderRadius': '10px', 
+                        'backgroundColor': '#2c3e50'
+                    }
+                )
+            )
+        elif active_tab == "workers":
+            # Generate inner tabs for workers
+            inner_tabs = generate_worker_tabs(section_type)
+            if isinstance(inner_tabs, dbc.Alert):
+                contents.append(inner_tabs)
+            else:
+                contents.append(
+                    html.Div([
+                        inner_tabs,
+                        html.Div(id=f'content-inner-{section_type.value.lower()}')
+                    ])
+                )
+        else:
+            contents.append(html.P("Select a tab to view content."))
+    
+    return contents
+
+# Callback to update worker assignments content based on inner active tabs
+@app_dash.callback(
+    [
+        Output(f'content-inner-{section_type.value.lower()}-{worker_id}', 'children') 
+        for section_type in SectionType 
+        if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
+        for worker_id in simulation.hospital.get_section(section_type).worker_to_patient.keys()
+    ],
+    [
+        Input(f'tabs-inner-{section_type.value.lower()}', 'active_tab') 
+        for section_type in SectionType 
+        if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
+        for _ in simulation.hospital.get_section(section_type).worker_to_patient.keys()
+    ] +
+    [
+        Input('interval-component', 'n_intervals')
+    ]
+)
+def update_worker_contents(*args):
+    """
+    Updates the content within each worker's inner tab.
+    Displays the patient the worker is currently serving.
+    """
+    n_intervals = args[-1]
+    active_tabs_inner = args[:-1]
+    contents = []
+    
+    # Iterate over sections and workers to update their content
+    worker_idx = 0
+    for section_type in SectionType:
+        if section_type in [SectionType.OUTSIDE, SectionType.RIP]:
+            continue
+        section = simulation.hospital.get_section(section_type)
+        if not section:
+            continue
+        for worker_id in section.worker_to_patient.keys():
+            active_tab = active_tabs_inner[worker_idx]
+            expected_tab_id = f'worker-{section_type.value.lower()}-{worker_id}'
+            if active_tab == expected_tab_id:
+                patient = section.worker_to_patient.get(worker_id)
+                if patient:
+                    patient_info = {
+                        "Patient ID": patient.id,
+                        "Type": patient.patient_type.value,
+                        "Surgery": patient.surgery_type.value
+                    }
+                    df = pd.DataFrame([patient_info])
+                    contents.append(
+                        dbc.Table.from_dataframe(
+                            df,
+                            striped=True,
+                            bordered=True,
+                            hover=True,
+                            dark=True,
+                            responsive=True
+                        )
+                    )
+
+                else:
+                    contents.append(
+                        dbc.Alert("No patient assigned.", color="info")
+                    )
+            else:
+                contents.append(html.P("Select a worker tab to view details."))
+            worker_idx += 1
+    
+    return contents
 
 # Callback to update simulation clock
 @app_dash.callback(
@@ -408,8 +605,9 @@ def update_button_states(*args):
     
     return pause_disabled + resume_disabled
 
+# Callback to handle button clicks for pausing and resuming sections
 @app_dash.callback(
-    Output('dummy-output', 'children'),  # Dummy output since Dash requires an output
+    Output('dummy-output', 'children'),  # Dummy output since Dash requires at least one output
     [
         Input(f'pause-{section_type.value.lower()}', 'n_clicks') for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
     ] +
@@ -437,6 +635,7 @@ def control_sections(*args):
     
     return ""
 
+# Callback to handle simulation speed slider (if implemented)
 @app_dash.callback(
     Output('dummy-output-speed', 'children'),  # Dummy output
     Input('speed-slider', 'value')
@@ -444,7 +643,7 @@ def control_sections(*args):
 def update_speed(value):
     global SIMULATION_SPEED
     SIMULATION_SPEED = value
-    # Optionally, you can log or handle speed changes here
+    logger.info(f"Simulation speed updated to: {SIMULATION_SPEED}")
     return ""
 
 # Function to run Dash in a separate thread
@@ -458,7 +657,7 @@ async def main():
     dash_thread.start()
 
     # Start the simulation
-    simulation_task = asyncio.create_task(simulation.run_simulation(duration=120))  # Run for 120 seconds
+    simulation_task = asyncio.create_task(simulation.run_simulation(duration=SIMULATION_DURATION))  # Run for 1 hour
 
     # Wait for the simulation to finish
     await simulation_task
