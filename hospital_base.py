@@ -305,11 +305,14 @@ class Section(ABC):
     def move_patient(self, patient: Patient, target_section: SectionType):
         '''
         Moves a patient to the target section.
-        A to B
+        patient : from A to B
         '''
 
         # B instance
         target_section_instance = Section.__instances__.get(target_section.value)
+
+        print(len(self.entities), self.section_type)
+        print(len(target_section_instance.entities), target_section_instance.section_type)
 
         # if B is labratory
         condition1 = target_section_instance.section_type == SectionType.LABRATORY
@@ -319,7 +322,8 @@ class Section(ABC):
             print("there is a logical bug here")
 
         # Firstly
-        target_section_instance.entities.append(patient)
+        if not condition2:
+            target_section_instance.entities.append(patient)
         patient.section = target_section
 
         # Secondly
@@ -339,6 +343,8 @@ class Section(ABC):
         # if condition2:
         #     target_section_instance.entities.append(patient)
         #     # simulation_state[target_section.value]["entities"].append(patient)
+        print(len(self.entities), self.section_type)
+        print(len(target_section_instance.entities), target_section_instance.section_type)
 
         print(f"[{self.section_type.value}] Patient {patient.id} moved to {target_section.value}")
 
@@ -546,9 +552,11 @@ class Hospital:
         
 
 class ClientGeneratorForHospital(Section):
-    def __init__(self, targeted_hospital: Hospital, dist: Distribiutions,):
+    def __init__(self, targeted_hospital: Hospital, dist: Distribiutions, capacity: Capacity):
         self.section_type = SectionType.OUTSIDE
+        self.capacity = capacity
         self.entities: List[Patient] = []
+        self.queue = asyncio.Queue(maxsize=capacity.queue) if capacity.queue is not None else asyncio.Queue()
         self.targeted_hospital = targeted_hospital
         self.dist = dist
         self.running = True
