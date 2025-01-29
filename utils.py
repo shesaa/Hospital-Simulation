@@ -7,6 +7,7 @@ from base import SectionType
 # SIMULATION_SPEED = 1.0    # Multiplier for simulation speed (1.0 = real-time)
 SIMULATION_CLOCK = 0.0    # Simulation time in seconds
 SIMULATION_SPEED = 3600
+SIMULATION_DURATION = 3600
 
 from configure import *
 import numpy as np

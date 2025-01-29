@@ -80,6 +80,7 @@ class Section(ABC):
         self.pause_event = asyncio.Event()
         self.pause_event.set()  # Initially not paused
         self.workers: List[asyncio.Task] = []
+        self.worker_to_patient = {}
         
         Section.__instances__[self.section_type.value] = self
 
@@ -230,6 +231,8 @@ class Section(ABC):
 
                 print(f"[{self.section_type.value}] patient {patient.id} 's moved from queue into the {self.section_type.value} entities")
                 print(f"[{self.section_type.value}] Worker {worker_id} serving patient: {patient.id}")
+                self.worker_to_patient[worker_id] = patient
+                print(self.worker_to_patient)
 
                 # Simulate serving time
                 serve_time = distrib.generate_service_time(patient)
@@ -313,6 +316,7 @@ class Section(ABC):
 
         print(len(self.entities), self.section_type)
         print(len(target_section_instance.entities), target_section_instance.section_type)
+        
 
         # if B is labratory
         condition1 = target_section_instance.section_type == SectionType.LABRATORY
@@ -357,7 +361,7 @@ class Section(ABC):
         if specific_section == self.section_type:
             print(f"[{self.section_type.value}] Waiting to patient {patient.id} come back from {patient.section.value}")
         while patient.section != specific_section:
-            if (time.time() - start_time) > timeout:
+            if (time.time() - start_time) > timeout * SIMULATION_DURATION:
                 print(f"Timeout: Patient {patient.id} did not move to {specific_section.value} within {timeout} seconds.")
                 return False
             await asyncio.sleep(0.1 / SIMULATION_SPEED)  # Wait for 100ms before checking again
@@ -559,6 +563,7 @@ class ClientGeneratorForHospital(Section):
         self.queue = asyncio.Queue(maxsize=capacity.queue) if capacity.queue is not None else asyncio.Queue()
         self.targeted_hospital = targeted_hospital
         self.dist = dist
+        self.worker_to_patient = {}
         self.running = True
         Section.__instances__[self.section_type.value] = self
 
