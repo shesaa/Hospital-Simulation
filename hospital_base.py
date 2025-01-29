@@ -262,6 +262,19 @@ class Section(ABC):
                     print(f"[{self.section_type.value}] Worker {worker_id} waiting for patient {patient.id} to come back from {section_to.value}.")
                     is_backed = await self.wait_for_section(patient=patient, specific_section=self.section_type)
                     print(f"[{self.section_type.value}] patient {patient.id} is now backed from {section_to}!.")
+                    section_to = self.decide_next_section(patient=patient)
+                    print(f"[{self.section_type.value}] patient {patient.id} now must go to {section_to.value}")
+                    move_request = Request(
+                        section_req= self.section_type,
+                        section_from=self.section_type,
+                        section_to=section_to,
+                        patient=patient,
+                        _type_=RequestType.CLIENT_TO_SERVER
+                    )
+                    response = await self.request_sender(move_request)
+                    is_moved = await self.wait_for_section(patient=patient, specific_section=section_to)
+                    if is_moved:
+                        print(f"[{self.section_type.value}] Worker {worker_id} moved patient {patient.id} to {section_to.value}.")
                     
                 if self.section_type == SectionType.OPERATING_ROOMS:
                     print(f"[{self.section_type.value}] Worker {worker_id} is preparing surgery room for next patient...")
