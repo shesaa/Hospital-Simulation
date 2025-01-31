@@ -179,3 +179,30 @@ new_patient = Patient(
 # print(a.successful_surgery())
 # print(a.need_for_resurgery_after_complex_surgery())
 # print(a.group_non_elective_entrance())
+from typing import List, Type, Optional, Tuple
+
+
+def n_nonelective_n_elective(patient_list: List[Patient]) -> tuple:
+    n_nonelective = 0
+    n_elective = 0
+    print("hoy0")
+    print(patient_list)
+    for p in patient_list:
+        print("hoy")
+        if p.patient_type == PatientType.NON_ELECTIVE:
+            n_nonelective += 1
+            continue
+        n_elective += 1
+    return n_nonelective , n_elective
+
+
+# phase 2:
+# patient start time and end time for each section
+# capturing emergency queue by time: average
+# max & mean of queue length & waiting time of all sections
+# how many times re-surgery : average
+# average of efficiency of beds of each section
+
+# patient class: number of re-surgery /// start and end time of each section
+
+

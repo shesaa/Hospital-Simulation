@@ -100,14 +100,21 @@ class Simulation:
 
 # dashboard.py
 
+# dashboard.py
 
 # dashboard.py
 
+import dash
+from dash import dcc, html, Output, Input, State, callback_context
 import dash_bootstrap_components as dbc
 import plotly.graph_objs as go
-
+import asyncio
+import pandas as pd
 import threading
 import logging
+from dash.dependencies import MATCH, ALL, ALLSMALLER
+import json  # For safer JSON parsing
+import dash_table
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -116,9 +123,27 @@ logger = logging.getLogger(__name__)
 # Initialize the simulation
 simulation = Simulation()
 
-# Initialize Dash app with Bootstrap theme
-app_dash = dash.Dash(__name__, external_stylesheets=[dbc.themes.CYBORG])
-app_dash.title = "Hospital Simulation Dashboard"
+# Define the fixed sidebar style (Commented Out)
+SIDEBAR_STYLE = {
+    "position": "fixed",
+    "top": 0,
+    "left": 0,
+    "bottom": 0,
+    "width": "250px",
+    "padding": "20px",
+    "background-color": "#34495e",
+    "overflow": "auto",
+}
+
+# Define the main content style
+CONTENT_STYLE = {
+    "margin-left": "20px",  # Adjusted to prevent overlap since sidebar is commented out
+    "margin-right": "20px",
+    "padding": "20px",
+}
+
+def get_active_sections():
+    return [section_type for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]]
 
 def generate_section_card(section_type):
     """
@@ -128,18 +153,24 @@ def generate_section_card(section_type):
     """
     return dbc.Card(
         [
+            # Section Title
             dbc.CardHeader(
-                dbc.Tabs(
-                    [
-                        dbc.Tab(label="Patients", tab_id="patients"),
-                        dbc.Tab(label="Worker Assignments", tab_id="workers"),
-                    ],
-                    id=f'tabs-outer-{section_type.value.lower()}',
-                    active_tab="patients",
-                )
+                html.H4(f"{section_type.value} Section", className="text-center text-primary")
             ),
+            
+            # Outer Tabs
             dbc.CardBody(
-                html.Div(id=f'content-outer-{section_type.value.lower()}')
+                [
+                    dbc.Tabs(
+                        [
+                            dbc.Tab(label="Patients", tab_id="patients"),
+                            dbc.Tab(label="Worker Assignments", tab_id="workers"),
+                        ],
+                        id=f'tabs-outer-{section_type.value.lower()}',
+                        active_tab="patients",
+                    ),
+                    html.Div(id=f'content-outer-{section_type.value.lower()}')
+                ]
             )
         ],
         style={
@@ -150,6 +181,52 @@ def generate_section_card(section_type):
             'backgroundColor': '#2c3e50'
         }
     )
+
+def generate_event_table():
+    # Assuming `Section.all_events` is a global list of Event instances
+    event_data = []
+    for event in Section.all_events:
+        event_data.append({
+            "Event Type": event.event_type.value,
+            "Event Time": event.event_time,
+            "Patient ID": event.event_patient.id if event.event_patient else "N/A",
+            "Patient Type": event.event_patient.patient_type.value if event.event_patient else "N/A",
+            "Surgery Type": event.event_patient.surgery_type.value if event.event_patient else "N/A",
+        })
+    
+    if not event_data:
+        return dbc.Alert("No events to display.", color="info", className="text-center")
+    
+    df = pd.DataFrame(event_data[::-1])  # Reverse to show latest events first
+    
+    table = dash_table.DataTable(
+        data=df.to_dict('records'),
+        columns=[{"name": i, "id": i} for i in df.columns],
+        page_size=10,  # Number of rows per page
+        style_table={'overflowX': 'auto'},
+        style_cell={
+            'minWidth': '100px', 'width': '150px', 'maxWidth': '200px',
+            'whiteSpace': 'normal',
+            'textAlign': 'center',
+            'backgroundColor': '#1c1c1c',
+            'color': 'white'
+        },
+        style_header={
+            'backgroundColor': '#2980b9',
+            'fontWeight': 'bold',
+            'color': 'white'
+        },
+        style_data={
+            'backgroundColor': '#1c1c1c',
+            'color': 'white'
+        },
+        filter_action="native",
+        sort_action="native",
+        sort_mode="multi",
+        page_action='native',
+    )
+    
+    return table
 
 def generate_worker_tabs(section_type):
     """
@@ -163,185 +240,274 @@ def generate_worker_tabs(section_type):
     workers = section.worker_to_patient.keys()
     tabs = []
     for worker_id in workers:
-        tab_id = f'worker-{section_type.value.lower()}-{worker_id}'
+        tab_id = {'type': 'worker-tab', 'section': section_type.value.lower(), 'worker': worker_id}
         tabs.append(dbc.Tab(label=f"Worker {worker_id}", tab_id=tab_id))
     
     return dbc.Tabs(
         tabs,
-        id=f'tabs-inner-{section_type.value.lower()}',
-        active_tab=f'worker-{section_type.value.lower()}-{list(workers)[0]}' if workers else None,
+        id={'type': 'tabs-inner', 'section': section_type.value.lower()},
+        active_tab={'type': 'worker-tab', 'section': section_type.value.lower(), 'worker': list(workers)[0]} if workers else None,
     )
 
-def generate_worker_content(section_type, worker_id):
+def generate_dynamic_plot():
     """
-    Generates the content for a worker's inner tab.
-    Displays the patient the worker is currently serving.
+    Generates the Live Dynamic Plot with multiple charts stacked vertically.
     """
-    section = simulation.hospital.get_section(section_type)
-    if not section:
-        return dbc.Alert("Section not found.", color="danger")
-    
-    patient = section.worker_to_patient.get(worker_id)
-
-    if patient:
-        patient_info = {
-            "Patient ID": patient.id,
-            "Type": patient.patient_type.value,
-            "Surgery": patient.surgery_type.value
-        }
-        df = pd.DataFrame([patient_info])
-        return dbc.Table.from_dataframe(
-            df,
-            striped=True,
-            bordered=True,
-            hover=True,
-            dark=True,
-            responsive=True
+    # Define the number of dynamic charts you want
+    num_charts = 2* len(get_active_sections())  # You can adjust this number as needed
+    num_charts = 14
+    dynamic_charts = []
+    for i in range(1, num_charts + 1):
+        dynamic_charts.append(
+            dbc.Card(
+                dbc.CardBody([
+                    html.H4(f"Live Dynamic Plot {i}", className="text-center text-primary"),
+                    dcc.Graph(
+                        id=f'dynamic-plot-{i}',
+                        figure={
+                            'data': [
+                                go.Scatter(
+                                    x=[],
+                                    y=[],
+                                    mode='lines',
+                                    name=f'Variable {i}'
+                                )
+                            ],
+                            'layout': go.Layout(
+                                title=f'Dynamic Variable {i} Over Time',
+                                xaxis={'title': 'Time'},
+                                yaxis={'title': 'Value'},
+                                plot_bgcolor='#2c3e50',
+                                paper_bgcolor='#2c3e50',
+                                font={'color': 'white'}
+                            )
+                        },
+                        config={'displayModeBar': False}
+                    )
+                ]),
+                style={
+                    'width': '100%',
+                    'margin': '10px 0',
+                    'border': '2px solid #7f8c8d',
+                    'borderRadius': '10px',
+                    'backgroundColor': '#2c3e50'
+                }
+            )
         )
-    else:
-        return dbc.Alert("No patient assigned.", color="info")
+    
+    return html.Div(dynamic_charts)
 
+# Include Font Awesome in the external_stylesheets
+external_stylesheets = [
+    dbc.themes.CYBORG,  # Existing Bootstrap theme
+    "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"  # Font Awesome CDN
+]
 
 # Define Dash layout using Dash Bootstrap Components
-app_dash.layout = dbc.Container(
-    fluid=True,
-    children=[
-        # Header
-        dbc.Row(
-            dbc.Col(
-                html.H1("Hospital Simulation Dashboard", className="text-center text-primary mb-4"),
-                width=12
-            )
-        ),
+app_dash = dash.Dash(__name__, external_stylesheets=external_stylesheets)
+app_dash.title = "Hospital Simulation Dashboard"
+
+app_dash.layout = html.Div([
+    # Sidebar (Control Panels) - Currently Removed (Commented Out)
+    # html.Div([
+    #     html.H2("Control Panels", className="text-center text-light"),
+    #     dbc.Button("Pause All", id='pause-all', color="danger", className="mb-2 btn-block", n_clicks=0),
+    #     dbc.Button("Resume All", id='resume-all', color="success", className="mb-2 btn-block", n_clicks=0, disabled=True),
+    #     # Individual section controls within an accordion
+    #     dbc.Accordion([
+    #         dbc.AccordionItem([
+    #             dbc.Button("Pause PRE_SURGERY", id='pause-pre_surgery', color="danger", className="mb-2 btn-block", n_clicks=0),
+    #             dbc.Button("Resume PRE_SURGERY", id='resume-pre_surgery', color="success", className="mb-2 btn-block", n_clicks=0, disabled=True),
+    #         ], title="PRE_SURGERY"),
+    #         dbc.AccordionItem([
+    #             dbc.Button("Pause EMERGENCY", id='pause-emergency', color="danger", className="mb-2 btn-block", n_clicks=0),
+    #             dbc.Button("Resume EMERGENCY", id='resume-emergency', color="success", className="mb-2 btn-block", n_clicks=0, disabled=True),
+    #         ], title="EMERGENCY"),
+    #         # Add more AccordionItems for other sections
+    #     ], start_collapsed=True),
+    # ], style=SIDEBAR_STYLE),
+    
+    # Main Content Area
+    html.Div([
+        # Header with Event Table and Live Plot Toggle Buttons
+        html.Div([
+            dbc.Button(
+                [html.I(className="fa fa-table fa-lg me-2"), "Event Table"],  # Using html.I for Font Awesome icon
+                id='toggle-event-table',
+                color="secondary",
+                className="me-3",  # Margin-end for spacing
+                n_clicks=0
+            ),
+            dbc.Button(
+                [html.I(className="fa fa-chart-line fa-lg me-2"), "Live Plot"],  # Live Plot Button
+                id='toggle-live-plot',
+                color="primary",
+                className="",  # No additional class needed
+                n_clicks=0
+            ),
+        ], style={"textAlign": "left", "marginBottom": "20px"}),  # Align buttons to the left and add spacing
         
-        # Control Panels
-        dbc.Card(
-            dbc.CardBody([
-                html.H3("Control Panels", className="text-center text-light"),
-                dbc.Row([
-                    dbc.Col(
-                        dbc.Card(
-                            [
-                                dbc.CardHeader(html.H5(f"{section_type.value} Section", className="text-center text-primary")),
-                                dbc.CardBody([
-                                    dbc.Button("Pause", id=f'pause-{section_type.value.lower()}', color="danger", className="me-2 mb-2", n_clicks=0, disabled=False),
-                                    dbc.Button("Resume", id=f'resume-{section_type.value.lower()}', color="success", className="me-2 mb-2", n_clicks=0, disabled=True),
-                                ], className="text-center")
-                            ],
-                            className="mb-3",
-                            style={'backgroundColor': '#34495e', 'border': '1px solid #7f8c8d'}
-                        ),
-                        width=3
-                    ) for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
-                ])
-            ]),
-            className="mb-4",
-            style={'backgroundColor': '#34495e', 'border': 'none'}
-        ),
+        html.H1("Hospital Simulation Dashboard", className="text-center text-primary mb-4"),
         
-        # Live Status Display
-        dbc.Card(
+        # Conditional Content: Dashboard, Event Table, or Live Plot
+        html.Div(id='main-content')
+    ], style=CONTENT_STYLE),
+    
+    # Simulation Clock (fixed position)
+    html.Div(
+        dbc.Alert(id='clock-display', color="info", className="text-center"),
+        style={
+            'position': 'fixed',
+            'top': '20px',
+            'right': '20px',  # Positioned to the right
+            'zIndex': '9999',
+            'width': '200px'
+        }
+    ),
+    
+    # Interval Component for Callbacks (Placed outside the grid)
+    dcc.Interval(
+        id='interval-component',
+        interval=1*1000,  # 1 second in milliseconds
+        n_intervals=0
+    )
+])
+
+# Callback to toggle between Dashboard, Event Table, and Live Plot
+@app_dash.callback(
+    Output('main-content', 'children'),
+    [Input('toggle-event-table', 'n_clicks'),
+     Input('toggle-live-plot', 'n_clicks')],
+    [State('toggle-event-table', 'n_clicks'),
+     State('toggle-live-plot', 'n_clicks')]
+)
+def toggle_main_content(n_clicks_table, n_clicks_plot, state_clicks_table, state_clicks_plot):
+    # Determine which button was clicked
+    ctx = callback_context
+    if not ctx.triggered:
+        button_id = 'No clicks yet'
+    else:
+        button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    
+    if button_id == 'toggle-event-table':
+        # Show Event Table
+        return dbc.Card(
             dbc.CardBody([
-                html.H3("Live Status", className="text-center text-light"),
-                dbc.Table(
-                    [
-                        html.Thead(
-                            html.Tr([
-                                html.Th("Section", className="text-center"),
-                                html.Th("Entities", className="text-center"),
-                                html.Th("Queue Length", className="text-center")
-                            ], style={'backgroundColor': '#2980b9', 'color': 'white'})
-                        ),
-                        html.Tbody([
-                            html.Tr([
-                                html.Td(section_type.value, className="text-center"),
-                                html.Td(id=f'entities-{section_type.value.lower()}', className="text-center"),
-                                html.Td(id=f'queue-{section_type.value.lower()}', className="text-center")
-                            ]) for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
-                        ])
-                    ],
-                    bordered=True,
-                    dark=True,
-                    hover=True,
-                    responsive=True,
-                    striped=True
+                dcc.Loading(
+                    id="loading-event-table",
+                    type="circle",
+                    children=generate_event_table()
                 )
             ]),
-            className="mb-4",
-            style={'backgroundColor': '#34495e', 'border': 'none'}
-        ),
-        
-        # Patient Visualization with Inner Tabs
-        dbc.Card(
-            dbc.CardBody([
-                html.H3("Patient Visualization", className="text-center text-light"),
-                dbc.Row([
-                    dbc.Col(
-                        generate_section_card(section_type),
-                        width=12,
-                        md=6
-                    ) for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
-                ])
-            ]),
-            className="mb-4",
-            style={'backgroundColor': '#34495e', 'border': 'none'}
-        ),
-        
-        # Simulation Clock
-        dbc.Row(
-            dbc.Col(
-                dbc.Alert(id='clock-display', color="info", className="text-center"),
-                width=12
-            )
-        ),
-        
-        # Interval Component for Callbacks
-        dcc.Interval(
-            id='interval-component',
-            interval=1*1000,  # 1 second in milliseconds
-            n_intervals=0
+            style={'backgroundColor': '#1c1c1c', 'padding': '20px', 'borderRadius': '10px'}
         )
-    ]
-)
+    elif button_id == 'toggle-live-plot':
+        # Show Live Plot with Multiple Charts
+        return dbc.Card(
+            dbc.CardBody([
+                dcc.Loading(
+                    id="loading-dynamic-plots",
+                    type="circle",
+                    children=generate_dynamic_plot()
+                )
+            ]),
+            style={'backgroundColor': '#2c3e50', 'padding': '20px', 'borderRadius': '10px'}
+        )
+    else:
+        # Show Dashboard Content with Loading Indicators
+        return dbc.Card(
+            dbc.CardBody([
+                dcc.Loading(
+                    id="loading-live-status",
+                    type="circle",
+                    children=dbc.Card(
+                        dbc.CardBody([
+                            html.H3("Live Status", className="text-center text-light"),
+                            html.Div(id='live-status-table')
+                        ]),
+                        className="mb-4",
+                        style={'backgroundColor': '#34495e', 'border': 'none'}
+                    )
+                ),
+                
+                dcc.Loading(
+                    id="loading-patient-visualization",
+                    type="circle",
+                    children=dbc.Card(
+                        dbc.CardBody([
+                            html.H3("Patient Visualization", className="text-center text-light"),
+                            dbc.Row([
+                                dbc.Col(
+                                    generate_section_card(section_type),
+                                    width=12,
+                                    md=6
+                                ) for section_type in get_active_sections()
+                            ])
+                        ]),
+                        className="mb-4",
+                        style={'backgroundColor': '#34495e', 'border': 'none'}
+                    )
+                ),
+            ])
+        )
 
-# Callback to update live status numbers
+# Callback to update live status table with section capacity
 @app_dash.callback(
-    [
-        Output(f'entities-{section_type.value.lower()}', 'children') for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
-    ] +
-    [
-        Output(f'queue-{section_type.value.lower()}', 'children') for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
-    ],
+    Output('live-status-table', 'children'),
     Input('interval-component', 'n_intervals')
 )
-def update_section_statuses(n_intervals):
-    statuses_entities = []
-    statuses_queue = []
-    for section_type in SectionType:
-        if section_type in [SectionType.OUTSIDE, SectionType.RIP]:
-            continue
+def update_live_status_table(n_intervals):
+    active_sections = get_active_sections()
+    table_header = [
+        html.Thead(
+            html.Tr([
+                html.Th("Section", className="text-center"),
+                html.Th("Entities", className="text-center"),
+                html.Th("Queue Length", className="text-center")
+            ], style={'backgroundColor': '#2980b9', 'color': 'white'})
+        )
+    ]
+    table_body = []
+    for section_type in active_sections:
         section = simulation.hospital.get_section(section_type)
         if section:
             entities_count = len(section.entities)
             queue_count = section.queue.qsize()
-            statuses_entities.append(str(entities_count))
-            statuses_queue.append(str(queue_count))
+            capacity = section.capacity
+            # n_nonelective, n_elective= n_nonelective_n_elective(section.queue_lock)
+            section_display = f"{section_type.value} (Servers/Queue: {capacity.servers}/{capacity.queue})"
+            row = html.Tr([
+                html.Td(section_display, className="text-center"),
+                html.Td(str(entities_count), className="text-center"),
+                html.Td(f"{queue_count}", className="text-center")
+            ])
         else:
-            statuses_entities.append("0")
-            statuses_queue.append("0")
-    return statuses_entities + statuses_queue
+            row = html.Tr([
+                html.Td(f"{section_type.value} (Capacity: N/A)", className="text-center"),
+                html.Td("0", className="text-center"),
+                html.Td("0", className="text-center")
+            ])
+        table_body.append(row)
+    table = dbc.Table(
+        table_header + [html.Tbody(table_body)],
+        bordered=True,
+        dark=True,
+        hover=True,
+        responsive=True,
+        striped=True
+    )
+    return table
 
 # Callback to update patient visualization graphs
 @app_dash.callback(
-    [Output(f'graph-{section_type.value.lower()}', 'figure') for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]],
+    [Output(f'graph-{section_type.value.lower()}', 'figure') for section_type in get_active_sections()],
     Input('interval-component', 'n_intervals')
 )
 def update_graphs(n_intervals):
     figures = []
     MAX_DISPLAY = 20  # Maximum number of patients to display per section
-    for section_type in SectionType:
-        if section_type in [SectionType.OUTSIDE, SectionType.RIP]:
-            continue
+    active_sections = get_active_sections()
+    for section_type in active_sections:
         section = simulation.hospital.get_section(section_type)
         if section:
             entities = section.entities
@@ -425,10 +591,10 @@ def update_graphs(n_intervals):
 # Callback to update outer tab content (Patients or Worker Assignments)
 @app_dash.callback(
     [
-        Output(f'content-outer-{section_type.value.lower()}', 'children') for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
+        Output(f'content-outer-{section_type.value.lower()}', 'children') for section_type in get_active_sections()
     ],
     [
-        Input(f'tabs-outer-{section_type.value.lower()}', 'active_tab') for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
+        Input(f'tabs-outer-{section_type.value.lower()}', 'active_tab') for section_type in get_active_sections()
     ] +
     [
         Input('interval-component', 'n_intervals')
@@ -443,20 +609,29 @@ def update_outer_tabs(*args):
     n_intervals = args[-1]
     active_tabs_outer = args[:-1]
     contents = []
+    active_sections = get_active_sections()
+    # print("checking")
+    # print(active_sections, len(active_sections))
+    # print(active_tabs_outer)
+    # print(args)
+    # print(30*"^")
     
-    for idx, section_type in enumerate(SectionType):
-        if section_type in [SectionType.OUTSIDE, SectionType.RIP]:
-            continue
+    # Generate patient graphs first
+    figures = update_graphs(n_intervals)
+    
+    for idx, section_type in enumerate(active_sections):
         active_tab = active_tabs_outer[idx]
         if active_tab == "patients":
             # Display the patient graph
+            figures = update_graphs(n_intervals)
+            graph_idx = active_sections.index(section_type)
             contents.append(
                 dcc.Graph(
                     id=f'graph-inner-{section_type.value.lower()}',
-                    figure=update_graphs(n_intervals)[idx],
+                    figure=figures[graph_idx],
                     config={'displayModeBar': False},
                     style={
-                        'height': '200px', 
+                        'height': '400px',  # Increased height for better visibility
                         'width': '100%', 
                         'border': '2px solid #7f8c8d', 
                         'borderRadius': '10px', 
@@ -473,7 +648,13 @@ def update_outer_tabs(*args):
                 contents.append(
                     html.Div([
                         inner_tabs,
-                        html.Div(id=f'content-inner-{section_type.value.lower()}')
+                        # Dynamically generate worker content areas with pattern-matching IDs
+                        *[
+                            html.Div(
+                                id={'type': 'worker-content', 'section': section_type.value.lower(), 'worker': worker_id}
+                            ) 
+                            for worker_id in simulation.hospital.get_section(section_type).worker_to_patient.keys()
+                        ]
                     ])
                 )
         else:
@@ -481,73 +662,65 @@ def update_outer_tabs(*args):
     
     return contents
 
-# Callback to update worker assignments content based on inner active tabs
+# Pattern-Matching Callback to update worker contents
 @app_dash.callback(
-    [
-        Output(f'content-inner-{section_type.value.lower()}-{worker_id}', 'children') 
-        for section_type in SectionType 
-        if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
-        for worker_id in simulation.hospital.get_section(section_type).worker_to_patient.keys()
-    ],
-    [
-        Input(f'tabs-inner-{section_type.value.lower()}', 'active_tab') 
-        for section_type in SectionType 
-        if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
-        for _ in simulation.hospital.get_section(section_type).worker_to_patient.keys()
-    ] +
-    [
-        Input('interval-component', 'n_intervals')
-    ]
+    Output({'type': 'worker-content', 'section': MATCH, 'worker': MATCH}, 'children'),
+    Input({'type': 'worker-tab', 'section': MATCH, 'worker': MATCH}, 'active_tab')
 )
-def update_worker_contents(*args):
+def update_worker_content(active_tab):
     """
     Updates the content within each worker's inner tab.
     Displays the patient the worker is currently serving.
     """
-    n_intervals = args[-1]
-    active_tabs_inner = args[:-1]
-    contents = []
+    ctx = callback_context
+    if not ctx.triggered:
+        return ""
     
-    # Iterate over sections and workers to update their content
-    worker_idx = 0
-    for section_type in SectionType:
-        if section_type in [SectionType.OUTSIDE, SectionType.RIP]:
-            continue
-        section = simulation.hospital.get_section(section_type)
-        if not section:
-            continue
-        for worker_id in section.worker_to_patient.keys():
-            active_tab = active_tabs_inner[worker_idx]
-            expected_tab_id = f'worker-{section_type.value.lower()}-{worker_id}'
-            if active_tab == expected_tab_id:
-                patient = section.worker_to_patient.get(worker_id)
-                if patient:
-                    patient_info = {
-                        "Patient ID": patient.id,
-                        "Type": patient.patient_type.value,
-                        "Surgery": patient.surgery_type.value
-                    }
-                    df = pd.DataFrame([patient_info])
-                    contents.append(
-                        dbc.Table.from_dataframe(
-                            df,
-                            striped=True,
-                            bordered=True,
-                            hover=True,
-                            dark=True,
-                            responsive=True
-                        )
-                    )
-
-                else:
-                    contents.append(
-                        dbc.Alert("No patient assigned.", color="info")
-                    )
-            else:
-                contents.append(html.P("Select a worker tab to view details."))
-            worker_idx += 1
+    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    try:
+        triggered_id = json.loads(triggered_id.replace("'", "\""))  # Safer parsing
+    except json.JSONDecodeError:
+        print(f"Failed to parse triggered_id: {triggered_id}")
+        return dbc.Alert("Invalid triggered ID.", color="danger")
     
-    return contents
+    print("Triggered ID:", triggered_id)  # Debugging Statement
+    
+    section = triggered_id['section'].upper()
+    worker_id = triggered_id['worker']
+    
+    # Convert section string back to SectionType enum
+    try:
+        section_type = SectionType(section)
+    except ValueError:
+        print(f"Invalid section: {section}")
+        return dbc.Alert("Invalid section.", color="danger")
+    
+    section_obj = simulation.hospital.get_section(section_type)
+    if not section_obj:
+        print(f"Section object not found for: {section_type}")
+        return dbc.Alert("Section not found.", color="danger")
+    
+    patient = section_obj.worker_to_patient.get(worker_id)
+    
+    if patient:
+        print(f"Worker {worker_id} is assigned to Patient {patient.id}")  # Debugging Statement
+        patient_info = {
+            "Patient ID": patient.id,
+            "Type": patient.patient_type.value,
+            "Surgery": patient.surgery_type.value
+        }
+        df = pd.DataFrame([patient_info])
+        return dbc.Table.from_dataframe(
+            df,
+            striped=True,
+            bordered=True,
+            hover=True,
+            dark=True,
+            responsive=True
+        )
+    else:
+        print(f"Worker {worker_id} has no assigned patient.")  # Debugging Statement
+        return dbc.Alert("No patient assigned.", color="info")
 
 # Callback to update simulation clock
 @app_dash.callback(
@@ -562,23 +735,23 @@ def update_clock(n):
     time_str = f"Simulation Time: {days}d {hours:02}h {minutes:02}m {seconds:02}s"
     return dbc.Alert(time_str, color="info", className="text-center")
 
-# Callback to handle pause and resume buttons
+# Callback to handle pause and resume buttons (if Control Panels are re-enabled)
 @app_dash.callback(
     [
-        Output(f'pause-{section_type.value.lower()}', 'disabled') for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
+        Output(f'pause-{section_type.value.lower()}', 'disabled') for section_type in get_active_sections()
     ] +
     [
-        Output(f'resume-{section_type.value.lower()}', 'disabled') for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
+        Output(f'resume-{section_type.value.lower()}', 'disabled') for section_type in get_active_sections()
     ],
     [
-        Input(f'pause-{section_type.value.lower()}', 'n_clicks') for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
+        Input(f'pause-{section_type.value.lower()}', 'n_clicks') for section_type in get_active_sections()
     ] +
     [
-        Input(f'resume-{section_type.value.lower()}', 'n_clicks') for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
+        Input(f'resume-{section_type.value.lower()}', 'n_clicks') for section_type in get_active_sections()
     ]
 )
 def update_button_states(*args):
-    num_sections = (len(SectionType) - 2)  # Excluding OUTSIDE and RIP
+    num_sections = len(get_active_sections())
     pause_clicks = args[:num_sections]
     resume_clicks = args[num_sections:]
     
@@ -586,9 +759,7 @@ def update_button_states(*args):
     pause_disabled = []
     resume_disabled = []
     
-    for idx, section_type in enumerate(SectionType):
-        if section_type in [SectionType.OUTSIDE, SectionType.RIP]:
-            continue
+    for idx, section_type in enumerate(get_active_sections()):
         section = simulation.hospital.get_section(section_type)
         if section:
             # If section is paused, disable pause button and enable resume
@@ -609,20 +780,18 @@ def update_button_states(*args):
 @app_dash.callback(
     Output('dummy-output', 'children'),  # Dummy output since Dash requires at least one output
     [
-        Input(f'pause-{section_type.value.lower()}', 'n_clicks') for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
+        Input(f'pause-{section_type.value.lower()}', 'n_clicks') for section_type in get_active_sections()
     ] +
     [
-        Input(f'resume-{section_type.value.lower()}', 'n_clicks') for section_type in SectionType if section_type not in [SectionType.OUTSIDE, SectionType.RIP]
+        Input(f'resume-{section_type.value.lower()}', 'n_clicks') for section_type in get_active_sections()
     ]
 )
 def control_sections(*args):
-    num_sections = (len(SectionType) - 2)  # Excluding OUTSIDE and RIP
+    num_sections = len(get_active_sections())
     pause_clicks = args[:num_sections]
     resume_clicks = args[num_sections:]
     
-    for idx, section_type in enumerate(SectionType):
-        if section_type in [SectionType.OUTSIDE, SectionType.RIP]:
-            continue
+    for idx, section_type in enumerate(get_active_sections()):
         section = simulation.hospital.get_section(section_type)
         if section:
             # If pause button clicked
@@ -646,6 +815,64 @@ def update_speed(value):
     logger.info(f"Simulation speed updated to: {SIMULATION_SPEED}")
     return ""
 
+# Callback to update each Dynamic Plot
+@app_dash.callback(
+    [
+        Output(f'dynamic-plot-{i}', 'figure') for i in range(1, 2* len(get_active_sections())+1)
+    ],
+    Input('interval-component', 'n_intervals'))
+def update_dynamic_plots(n_intervals):
+    # Example: Creating three different dynamic plots
+    import math
+    figures = []
+    for i in get_active_sections():
+        section = simulation.hospital.get_section(i)
+        x_q, y_q = section.queue_size_time_series
+        x_e, y_e = section.entity_size_time_series
+        # y = [math.sin((i * j + n_intervals) * 0.1) for j in x]  # Different sine waves
+        
+        figure = {
+            'data': [
+                go.Scatter(
+                    x=x_q,
+                    y=y_q,
+                    mode='lines',
+                    name=f'{i.value} queue size',
+                    line=dict(color='cyan')
+                )
+            ],
+            'layout': go.Layout(
+                title=f'{i.value} queue size Over Time',
+                xaxis={'title': 'Time'},
+                yaxis={'title': 'Value'},
+                plot_bgcolor='#2c3e50',
+                paper_bgcolor='#2c3e50',
+                font={'color': 'white'}
+            )
+        }
+        figures.append(figure)
+        figure = {
+            'data': [
+                go.Scatter(
+                    x=x_e,
+                    y=y_e,
+                    mode='lines',
+                    name=f'{i.value} entity size',
+                    line=dict(color='cyan')
+                )
+            ],
+            'layout': go.Layout(
+                title=f'{i.value} entity size Over Time',
+                xaxis={'title': 'Time'},
+                yaxis={'title': 'Value'},
+                plot_bgcolor='#2c3e50',
+                paper_bgcolor='#2c3e50',
+                font={'color': 'white'}
+            )
+        }
+        figures.append(figure)
+    return figures
+
 # Function to run Dash in a separate thread
 def run_dash():
     app_dash.run_server(debug=False, use_reloader=False, port=8060)
@@ -657,7 +884,7 @@ async def main():
     dash_thread.start()
 
     # Start the simulation
-    simulation_task = asyncio.create_task(simulation.run_simulation(duration=SIMULATION_DURATION))  # Run for 1 hour
+    simulation_task = asyncio.create_task(simulation.run_simulation(duration=3600))  # Run for 1 hour
 
     # Wait for the simulation to finish
     await simulation_task

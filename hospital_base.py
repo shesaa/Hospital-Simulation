@@ -16,6 +16,8 @@ from configure import *
 from utils import *
 from comminucation import *
 
+from events import *
+
 st = time.time()
 
 
@@ -67,6 +69,8 @@ class Section(ABC):
     __instances__: Dict[str, 'Section'] = {}
     _section_name_ = ""
     dist = Distribiutions()
+    all_events = []
+    all_patients = []
 
     def __init__(self, section_type: SectionType, capacity: Capacity) -> None:
         self.section_type = section_type
@@ -85,25 +89,31 @@ class Section(ABC):
         Section.__instances__[self.section_type.value] = self
 
         self.queue_lock = asyncio.Lock()
+        self.patients_to_process = []
+
+        self.queue_size_time_series = ([], [])
+        self.entity_size_time_series = ([], [])
+        self.duration_serve = []
+
 
     async def get_next_patient(self) -> Optional[Patient]:
         async with self.queue_lock:
-            patients_to_process = []
+            self.patients_to_process = []
             # Drain the queue
             while not self.queue.empty():
-                patients_to_process.append(await self.queue.get())
+                self.patients_to_process.append(await self.queue.get())
 
-            if not patients_to_process:
+            if not self.patients_to_process:
                 return None
 
             # Sort patients by their priority (lowest number first: Type & entrance Time)
-            patients_to_process.sort(key=lambda p: self._compute_priority_(patient=p))
+            self.patients_to_process.sort(key=lambda p: self._compute_priority_(patient=p))
 
 
-            highest_priority_patient = patients_to_process.pop(0)
+            highest_priority_patient = self.patients_to_process.pop(0)
 
             # Reinsert remaining patients back into the queue
-            for patient in patients_to_process:
+            for patient in self.patients_to_process:
                 await self.queue.put(patient)
 
             return highest_priority_patient
@@ -125,6 +135,25 @@ class Section(ABC):
         entry_time = patient.queue_entry_time or float('inf')
 
         return (type_priority, entry_time)
+    
+    def _determine_event_type_(self, message: Request) -> EventType:
+        section_to = message.section_to
+        _map_dict_ = {
+            SectionType.EMERGENCY: EventType.PA,
+            SectionType.PRE_SURGERY: EventType.PA,
+            
+            SectionType.LABRATORY: EventType.LT,
+            SectionType.OPERATING_ROOMS: EventType.SRT,
+            SectionType.ICU: EventType.ICUT,
+            SectionType.CCU: EventType.CCUT,
+            SectionType.WARD: EventType.GT,
+            SectionType.OUTSIDE: EventType.END
+        }
+        event_type  = _map_dict_[section_to]
+        if message.section_from in [SectionType.CCU, SectionType.ICU] and section_to == SectionType.OPERATING_ROOMS:
+            event_type = EventType.NRS # need for re-surgery
+        return event_type
+    
 
     async def request_handler(self, message: Request) -> Response:
         print(30* "--")
@@ -138,6 +167,8 @@ class Section(ABC):
                     return response
                 self.queue.put_nowait(message.patient)
                 print(f"[{self.section_type.value}] Patient {message.patient.id} added to queue.")
+                self.queue_size_time_series[0].append((time.time() - st)* 3600/SIMULATION_SPEED)
+                self.queue_size_time_series[1].append(self.queue.qsize())
                 return Response(request=message, status=ResponseStatus.ACCEPTED)
             except asyncio.QueueFull:
                 print(f"[{self.section_type.value}] Queue full. Patient {message.patient.id} rejected.")
@@ -156,8 +187,17 @@ class Section(ABC):
             print("hah3")
         if message._type_ == RequestType.CLIENT_TO_SERVER:
             section = Section.__instances__.get(message.section_to.value)
+            event = Event(_type_= self._determine_event_type_(message=message),
+                _time_= (time.time() - st)* 3600/SIMULATION_SPEED,
+                patient=message.patient)
+            self.all_events.append(event)
         else:
             section = Section.__instances__.get(message.section_from.value)
+            if self.section_type in [SectionType.EMERGENCY, SectionType.PRE_SURGERY]:
+                event = Event(_type_= EventType.AW,
+                    _time_= (time.time() - st)* 3600/SIMULATION_SPEED,
+                    patient=message.patient)
+                self.all_events.append(event)
         if not section:
             print(f"Section {message.section_to.value} does not exist.")
             return Response(request=message, status=ResponseStatus.REJECTED)
@@ -230,9 +270,13 @@ class Section(ABC):
                 # print("block_time:", (time.time()- st)/ SIMULATION_SPEED, "hours")
 
                 print(f"[{self.section_type.value}] patient {patient.id} 's moved from queue into the {self.section_type.value} entities")
+                self.queue_size_time_series[0].append((time.time() - st)* 3600/SIMULATION_SPEED)
+                self.queue_size_time_series[1].append(self.queue.qsize())
+                
+                patient_start_time = (time.time() - st) * 3600 / SIMULATION_SPEED
                 print(f"[{self.section_type.value}] Worker {worker_id} serving patient: {patient.id}")
                 self.worker_to_patient[worker_id] = patient
-                print(self.worker_to_patient)
+                # print(self.worker_to_patient)
 
                 # Simulate serving time
                 serve_time = distrib.generate_service_time(patient)
@@ -279,11 +323,15 @@ class Section(ABC):
                     if is_moved:
                         print(f"[{self.section_type.value}] Worker {worker_id} moved patient {patient.id} to {section_to.value}.")
                     
+                print(f"[{self.section_type.value}] Worker {worker_id} task done (serving patient {patient.id})")
+                self.worker_to_patient[worker_id] = None
+                patient_end_time = (time.time() - st) * 3600 / SIMULATION_SPEED
+                duration_patient = patient_end_time - patient_start_time
+                patient.section_entry_leave_time.append((self.section_type, patient_start_time, patient_end_time, duration_patient, section_to))
                 if self.section_type == SectionType.OPERATING_ROOMS:
                     print(f"[{self.section_type.value}] Worker {worker_id} is preparing surgery room for next patient...")
                     await asyncio.shield(asyncio.sleep((1/6) * 3600 / SIMULATION_SPEED))
                     print(f"[{self.section_type.value}] Worker {worker_id} preparing surgery room DONE!")
-                print(f"[{self.section_type.value}] Worker {worker_id} task done (serving patient {patient.id})")
                 self.queue.task_done()
             except asyncio.CancelledError:
                 print(f"[{self.section_type.value}] Worker {worker_id} cancelled.")
@@ -314,8 +362,8 @@ class Section(ABC):
         # B instance
         target_section_instance = Section.__instances__.get(target_section.value)
 
-        print(len(self.entities), self.section_type)
-        print(len(target_section_instance.entities), target_section_instance.section_type)
+        # print(len(self.entities), self.section_type)
+        # print(len(target_section_instance.entities), target_section_instance.section_type)
         
 
         # if B is labratory
@@ -334,6 +382,10 @@ class Section(ABC):
         if not condition1:
             self.entities.remove(patient)
 
+        self.entity_size_time_series[0].append((time.time() - st)* 3600/SIMULATION_SPEED)
+        self.entity_size_time_series[1].append(len(self.entities))
+        target_section_instance.entity_size_time_series[0].append((time.time() - st)* 3600/SIMULATION_SPEED)
+        target_section_instance.entity_size_time_series[1].append(len(target_section_instance.entities))
         # Finally
         # deleting patient from B queue
 
@@ -347,8 +399,8 @@ class Section(ABC):
         # if condition2:
         #     target_section_instance.entities.append(patient)
         #     # simulation_state[target_section.value]["entities"].append(patient)
-        print(len(self.entities), self.section_type)
-        print(len(target_section_instance.entities), target_section_instance.section_type)
+        # print(len(self.entities), self.section_type)
+        # print(len(target_section_instance.entities), target_section_instance.section_type)
 
         print(f"[{self.section_type.value}] Patient {patient.id} moved to {target_section.value}")
 
@@ -447,7 +499,8 @@ class Hospital:
         def decide_next_section(self, patient: Patient):
             next_section_type = SectionType.OUTSIDE
             if self.dist.need_for_resurgery_after_complex_surgery():
-                next_section_type = SectionType.OPERATING_ROOMS    
+                next_section_type = SectionType.OPERATING_ROOMS 
+                patient.re_surgery_times += 1
             return next_section_type
 
         async def section_process(self):
@@ -464,6 +517,7 @@ class Hospital:
             next_section_type = SectionType.OUTSIDE
             if self.dist.need_for_resurgery_after_complex_surgery():
                 next_section_type = SectionType.OPERATING_ROOMS
+                patient.re_surgery_times += 1
             return next_section_type
 
         async def section_process(self):
@@ -566,6 +620,10 @@ class ClientGeneratorForHospital(Section):
         self.worker_to_patient = {}
         self.running = True
         Section.__instances__[self.section_type.value] = self
+        self.queue_size_time_series = ([], [])
+        self.entity_size_time_series = ([], [])
+        self.duration_serve = []
+
 
     async def run(self):
         print("[ClientGenerator] Started.")
@@ -592,7 +650,13 @@ class ClientGeneratorForHospital(Section):
                     _type_=RequestType.CLIENT_TO_SERVER
                 )
                 # response = self.targeted_hospital.emergency.request_handler(message=request)
+                event = Event(_type_= EventType.PA,
+                _time_= (time.time() - st)* 3600/SIMULATION_SPEED,
+                patient=p)
+                self.all_events.append(event)
                 response = await self.request_sender(message=request)
+                if response.status == ResponseStatus.ACCEPTED:
+                    self.all_patients.append(p)
                 print(f"[ClientGenerator] Sent entry request for patient: {p.id} - Response: {response.status.value}")
 
     async def stop(self):

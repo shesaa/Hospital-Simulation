@@ -3,7 +3,7 @@ from typing import List, Type, Optional, Dict
 
 
 SECTION_CAPACITIES: Dict[SectionType, Capacity] = {
-    SectionType.OUTSIDE: Capacity(servers=1, queue=None),
+    SectionType.OUTSIDE: Capacity(servers=2, queue=None),
     SectionType.PRE_SURGERY: Capacity(servers=25, queue=None),
     SectionType.EMERGENCY: Capacity(servers=10, queue=10),
     SectionType.LABRATORY: Capacity(servers=3, queue=None),

@@ -3,6 +3,8 @@ from enum import Enum
 from typing import List, Type, Optional
 from dataclasses import dataclass, field
 from base import SectionType
+# from events import Events
+
 
 class PatientType(Enum):
     ELECTIVE = "Elective"
@@ -21,10 +23,12 @@ class Patient:
     patient_type: PatientType
     surgery_type: SurgeryType
     section: SectionType
+    section_entry_leave_time: list = field(default_factory=list)
     tested_at_lab: bool = False
-    re_surgery: bool = False
+    re_surgery_times: int = 0
     queue_entry_time: float = None
     service_start_time: float = None
+    # events_list_patient: List[Events] = []
 
 
     def to_dict(self):
