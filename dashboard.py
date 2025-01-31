@@ -839,7 +839,14 @@ def update_dynamic_plots(n_intervals):
                     mode='lines',
                     name=f'{i.value} queue size',
                     line=dict(color='cyan')
-                )
+                ),
+                go.Scatter(x=x_q,
+                    y=[np.mean(y_q)]*len(x_q),
+                    mode='lines',
+                    name='Average',
+                    line=dict(color='yellow', dash='dash')
+
+                ) 
             ],
             'layout': go.Layout(
                 title=f'{i.value} queue size Over Time',
@@ -859,7 +866,15 @@ def update_dynamic_plots(n_intervals):
                     mode='lines',
                     name=f'{i.value} entity size',
                     line=dict(color='cyan')
-                )
+                ),
+                go.Scatter(x=x_e,
+                    y=[np.mean(y_e)]*len(x_e),
+                    mode='lines',
+                    name='Average',
+                    line=dict(color='yellow', dash='dash')
+
+                ) 
+                            
             ],
             'layout': go.Layout(
                 title=f'{i.value} entity size Over Time',
