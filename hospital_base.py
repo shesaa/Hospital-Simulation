@@ -299,7 +299,7 @@ class Section(ABC):
                 if self.section_type == SectionType.LABRATORY:
                     patient.tested_at_lab = True
                 
-                if self.section_type == SectionType.OUTSIDE:
+                if self.section_type in [SectionType.OUTSIDE, SectionType.RIP]:
                     self.queue.task_done()
                     continue
                 
@@ -717,7 +717,7 @@ class Nature:
             if day_in_this_month != power_outage_day:
                 await asyncio.sleep(3 * 3600 / SIMULATION_SPEED)
                 continue
-            self.hospital.electricity_suspension()
+            # self.hospital.electricity_suspension()
             pass
 
     async def stop(self):

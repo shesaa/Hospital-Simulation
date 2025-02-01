@@ -921,10 +921,79 @@ async def main():
     dash_thread.start()
 
     # Start the simulation
-    simulation_task = asyncio.create_task(simulation.run_simulation(duration=3600))  # Run for 1 hour
+    simulation_task = asyncio.create_task(simulation.run_simulation(duration=750))
 
     # Wait for the simulation to finish
     await simulation_task
+
+
+
+
+def save_things(i: int):
+    path = f'result{i}/'
+    event_data = []
+    for event in Section.all_events:
+        event_data.append({
+            "Event Type": event.event_type.value,
+            "Event Time": event.event_time,
+            "Patient ID": event.event_patient.id if event.event_patient else "N/A",
+            "Patient Type": event.event_patient.patient_type.value if event.event_patient else "N/A",
+            "Surgery Type": event.event_patient.surgery_type.value if event.event_patient else "N/A",
+        })
+    
+    pd.DataFrame(event_data).to_excel(path+'events.xlsx')
+
+
+    # 
+    patient_data = []
+    for p in Section.all_patients:
+        total_serving_duration = 0
+        total_queue_duration = 0
+
+        dict_p = {
+                "Patient id": p.id,
+                "Patient Type": p.patient_type.value,
+                "Surgery Type": p.surgery_type.value,
+                "re-surgery times": p.re_surgery_times
+                
+            }
+        for sec in get_active_sections():
+
+            # if sec == SectionType.WARD:
+                # print(p.section_entry_leave_time)
+            section_entry_leave_time = p.section_entry_leave_time.get(sec)
+            queue_entry_leave_time = p.queue_entry_leave_time.get(sec)
+            # if not section_entry_leave_time or not queue_entry_leave_time:
+            #     dict_p[f"{sec.value} Serving Duration"] = None
+            #     dict_p[f"{sec.value} Queue Duration"] = None
+            #     continue
+            # print(sec.value)
+            try:
+                s_duration = section_entry_leave_time[1] - section_entry_leave_time[0]
+                q_duration = queue_entry_leave_time[1] - queue_entry_leave_time[0]
+                dict_p[f"{sec.value} Serving Duration"] = s_duration
+                dict_p[f"{sec.value} Queue Duration"] = q_duration
+                total_queue_duration += q_duration
+                total_serving_duration += s_duration
+            except TypeError:
+                dict_p[f"{sec.value} Serving Duration"] = None
+                dict_p[f"{sec.value} Queue Duration"] = None
+        dict_p["total_serving_duration"] = total_serving_duration
+        dict_p["total_queue_duration"] = total_queue_duration
+        dict_p["total_time_in_system"] = total_queue_duration + total_serving_duration
+
+        patient_data.append(dict_p)
+        pd.DataFrame(patient_data).to_excel(path+'patients.xlsx')
+
+
+        for sec in get_active_sections():
+            instance_sec = Section.__instances__.get(sec.value)
+            x,y = instance_sec.entity_size_time_series
+            x2, y2 = instance_sec.queue_size_time_series
+
+            pd.DataFrame(y2, index=x2).to_excel(path + f'{sec.value} queue.xlsx')
+            pd.DataFrame(y, index=x).to_excel(path + f'{sec.value} entity.xlsx')
+
 
 if __name__ == "__main__":
     try:
@@ -933,45 +1002,5 @@ if __name__ == "__main__":
         print("Simulation interrupted by user.")
     
     finally:
-            event_data = []
-            for event in Section.all_events:
-                event_data.append({
-                    "Event Type": event.event_type.value,
-                    "Event Time": event.event_time,
-                    "Patient ID": event.event_patient.id if event.event_patient else "N/A",
-                    "Patient Type": event.event_patient.patient_type.value if event.event_patient else "N/A",
-                    "Surgery Type": event.event_patient.surgery_type.value if event.event_patient else "N/A",
-                })
+        save_things(5)
             
-            pd.DataFrame(event_data).to_excel('events.xlsx')
-
-
-            # 
-            patient_data = []
-            for p in Section.all_patients:
-                
-                dict_p =                     {
-                        "Patient id": p.id,
-                        "Patient Type": p.patient_type.value,
-                        "re-surgery times": p.re_surgery_times
-                        
-                    }
-                for sec in get_active_sections():
-                    # if sec == SectionType.WARD:
-                        # print(p.section_entry_leave_time)
-                    section_entry_leave_time = p.section_entry_leave_time.get(sec)
-                    queue_entry_leave_time = p.queue_entry_leave_time.get(sec)
-                    # if not section_entry_leave_time or not queue_entry_leave_time:
-                    #     dict_p[f"{sec.value} Serving Duration"] = None
-                    #     dict_p[f"{sec.value} Queue Duration"] = None
-                    #     continue
-                    # print(sec.value)
-                    try:
-                        dict_p[f"{sec.value} Serving Duration"] = section_entry_leave_time[1] - section_entry_leave_time[0]
-                        dict_p[f"{sec.value} Queue Duration"] = queue_entry_leave_time[1] - queue_entry_leave_time[0]
-                    except TypeError:
-                        dict_p[f"{sec.value} Serving Duration"] = None
-                        dict_p[f"{sec.value} Queue Duration"] = None
-
-                patient_data.append(dict_p)
-                pd.DataFrame(patient_data).to_excel('patients.xlsx')
