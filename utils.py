@@ -155,13 +155,13 @@ class Distribiutions:
 
 
 
-new_patient = Patient(
-    id=1,
-    patient_initial_type=PatientType.ELECTIVE,
-    patient_type=PatientType.ELECTIVE,
-    surgery_type=SurgeryType.MEDIOCRE,
-    section= SectionType.OUTSIDE
-)
+# new_patient = Patient(
+#     id=1,
+#     patient_initial_type=PatientType.ELECTIVE,
+#     patient_type=PatientType.ELECTIVE,
+#     surgery_type=SurgeryType.MEDIOCRE,
+#     section= SectionType.OUTSIDE
+# )
 
 # a = Distribiutions()
 # print(a.generate_next_patient_time(patient_type=new_patient.patient_type))

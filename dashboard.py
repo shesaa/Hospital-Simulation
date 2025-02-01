@@ -23,6 +23,7 @@ class Simulation:
             dist=self.dist,
             capacity= SECTION_CAPACITIES.get(SectionType.OUTSIDE)
         )
+        self.nature = Nature(targeted_hospital=self.hospital, dist=self.dist)
         # self.state = simulation_state
         self.tasks: List[asyncio.Task] = []
 
@@ -38,6 +39,9 @@ class Simulation:
         
         # Start client generator
         self.tasks.append(asyncio.create_task(self.client_generator.run()))
+        self.tasks.append(asyncio.create_task(self.nature.run()))
+        self.tasks.append(asyncio.create_task(self.nature.rip.run(self.dist)))
+
         # Start state updater
         self.tasks.append(asyncio.create_task(self.update_state()))
         print("[Simulation] Started.")
@@ -45,10 +49,26 @@ class Simulation:
     async def update_state(self):
         global SIMULATION_CLOCK
         update_interval = 1  # seconds (real time)
+        power_outage_day = self.dist.uniform_dist(1, 30)
+        # power_outage_day = 1
+        outage = False
         while True:
             await asyncio.sleep(update_interval)  # Wait for the update interval
             # Increment simulation clock based on speed and interval
             SIMULATION_CLOCK += update_interval * SIMULATION_SPEED
+            days, remainder = divmod(int(SIMULATION_CLOCK), 86400)  # 86400 seconds in a day
+            day_in_this_month = days % 30
+            print(f"[Nature] Next Power outage is on day {power_outage_day} / now is day {day_in_this_month}")
+            if day_in_this_month == power_outage_day and not outage:
+                print("power off!")
+                await self.hospital.electricity_suspension()
+                start_outage_time = time.time()
+                outage = True
+            if outage is True and (time.time() - start_outage_time) >= 24:
+                print("power on!")
+                await self.hospital.icu.restore_capacity(reduction_percent=REDUCTION_PERCENT)
+                await self.hospital.ccu.restore_capacity(reduction_percent=REDUCTION_PERCENT)
+                outage = False
 
     async def stop(self):
         print("[Simulation] Stopping...")
@@ -60,6 +80,8 @@ class Simulation:
         await self.hospital.icu.stop()
         await self.hospital.operating_rooms.stop()
         await self.hospital.ward.stop()
+        await self.nature.rip.stop()
+        await self.nature.stop()
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
@@ -909,3 +931,47 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Simulation interrupted by user.")
+    
+    finally:
+            event_data = []
+            for event in Section.all_events:
+                event_data.append({
+                    "Event Type": event.event_type.value,
+                    "Event Time": event.event_time,
+                    "Patient ID": event.event_patient.id if event.event_patient else "N/A",
+                    "Patient Type": event.event_patient.patient_type.value if event.event_patient else "N/A",
+                    "Surgery Type": event.event_patient.surgery_type.value if event.event_patient else "N/A",
+                })
+            
+            pd.DataFrame(event_data).to_excel('events.xlsx')
+
+
+            # 
+            patient_data = []
+            for p in Section.all_patients:
+                
+                dict_p =                     {
+                        "Patient id": p.id,
+                        "Patient Type": p.patient_type.value,
+                        "re-surgery times": p.re_surgery_times
+                        
+                    }
+                for sec in get_active_sections():
+                    # if sec == SectionType.WARD:
+                        # print(p.section_entry_leave_time)
+                    section_entry_leave_time = p.section_entry_leave_time.get(sec)
+                    queue_entry_leave_time = p.queue_entry_leave_time.get(sec)
+                    # if not section_entry_leave_time or not queue_entry_leave_time:
+                    #     dict_p[f"{sec.value} Serving Duration"] = None
+                    #     dict_p[f"{sec.value} Queue Duration"] = None
+                    #     continue
+                    # print(sec.value)
+                    try:
+                        dict_p[f"{sec.value} Serving Duration"] = section_entry_leave_time[1] - section_entry_leave_time[0]
+                        dict_p[f"{sec.value} Queue Duration"] = queue_entry_leave_time[1] - queue_entry_leave_time[0]
+                    except TypeError:
+                        dict_p[f"{sec.value} Serving Duration"] = None
+                        dict_p[f"{sec.value} Queue Duration"] = None
+
+                patient_data.append(dict_p)
+                pd.DataFrame(patient_data).to_excel('patients.xlsx')

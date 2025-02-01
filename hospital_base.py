@@ -167,6 +167,9 @@ class Section(ABC):
                     return response
                 self.queue.put_nowait(message.patient)
                 print(f"[{self.section_type.value}] Patient {message.patient.id} added to queue.")
+                queue_entry_time = (time.time() - st) * 3600 / SIMULATION_SPEED
+                message.patient.queue_entry_time = queue_entry_time
+                message.patient.queue_entry_leave_time[self.section_type] = [queue_entry_time, None]
                 self.queue_size_time_series[0].append((time.time() - st)* 3600/SIMULATION_SPEED)
                 self.queue_size_time_series[1].append(self.queue.qsize())
                 return Response(request=message, status=ResponseStatus.ACCEPTED)
@@ -270,10 +273,13 @@ class Section(ABC):
                 # print("block_time:", (time.time()- st)/ SIMULATION_SPEED, "hours")
 
                 print(f"[{self.section_type.value}] patient {patient.id} 's moved from queue into the {self.section_type.value} entities")
+                time_entry = (time.time() - st) * 3600 / SIMULATION_SPEED
+                patient.queue_entry_leave_time[self.section_type][1] = time_entry
+                patient.section_entry_leave_time[self.section_type] = [time_entry, None]
                 self.queue_size_time_series[0].append((time.time() - st)* 3600/SIMULATION_SPEED)
                 self.queue_size_time_series[1].append(self.queue.qsize())
                 
-                patient_start_time = (time.time() - st) * 3600 / SIMULATION_SPEED
+                # patient_start_time = (time.time() - st) * 3600 / SIMULATION_SPEED
                 print(f"[{self.section_type.value}] Worker {worker_id} serving patient: {patient.id}")
                 self.worker_to_patient[worker_id] = patient
                 # print(self.worker_to_patient)
@@ -283,13 +289,19 @@ class Section(ABC):
                 print(f"[{self.section_type.value}] serve_time for patient {patient.id}: {serve_time}")
 
                 s = time.time()
-                patient.service_start_time = (s - st) * 3600 / SIMULATION_SPEED
+                # patient.service_start_time = (s - st) * 3600 / SIMULATION_SPEED
 
                 await asyncio.shield(asyncio.sleep(serve_time * 3600 / SIMULATION_SPEED))
                 print(f"[{self.section_type.value}] Worker {worker_id} finished serving patient: {patient.id} in", (time.time() - s)* 3600/ SIMULATION_SPEED, "hours")
+                patient_end_time = (time.time() - st) * 3600 / SIMULATION_SPEED
+                patient.section_entry_leave_time[self.section_type][1] = patient_end_time
 
                 if self.section_type == SectionType.LABRATORY:
                     patient.tested_at_lab = True
+                
+                if self.section_type == SectionType.OUTSIDE:
+                    self.queue.task_done()
+                    continue
                 
                 # After serving, time to take a step for entering next section
                 section_to = self.decide_next_section(patient=patient)
@@ -324,10 +336,9 @@ class Section(ABC):
                         print(f"[{self.section_type.value}] Worker {worker_id} moved patient {patient.id} to {section_to.value}.")
                     
                 print(f"[{self.section_type.value}] Worker {worker_id} task done (serving patient {patient.id})")
+
                 self.worker_to_patient[worker_id] = None
-                patient_end_time = (time.time() - st) * 3600 / SIMULATION_SPEED
-                duration_patient = patient_end_time - patient_start_time
-                patient.section_entry_leave_time.append((self.section_type, patient_start_time, patient_end_time, duration_patient, section_to))
+                # duration_patient = patient_end_time - patient_start_time
                 if self.section_type == SectionType.OPERATING_ROOMS:
                     print(f"[{self.section_type.value}] Worker {worker_id} is preparing surgery room for next patient...")
                     await asyncio.shield(asyncio.sleep((1/6) * 3600 / SIMULATION_SPEED))
@@ -429,7 +440,6 @@ class Section(ABC):
         new_server_count = max(1, int(original_servers * (1 - reduction_percent)))
 
         print(f"[{self.section_type.value}] Reducing capacity from {original_servers} to {new_server_count} servers.")
-
         # Cancel excess workers
         while len(self.workers) > new_server_count:
             worker = self.workers.pop()
@@ -443,17 +453,19 @@ class Section(ABC):
         self.capacity.servers = new_server_count
 
 
-    async def restore_capacity(self, target_servers: int, distrib: Distribiutions):
+    async def restore_capacity(self, reduction_percent: float):
         """
         Restores capacity by spawning additional workers until reaching target_servers.
         """
+        
         current_servers = self.capacity.servers
+        target_servers = int(current_servers / (1-reduction_percent))
         print(f"[{self.section_type.value}] Restoring capacity from {current_servers} to {target_servers} servers.")
 
         # Spawn new workers if needed
         for _ in range(target_servers - current_servers):
             worker_id = len(self.workers) + 1
-            new_worker = asyncio.create_task(self.worker_task(worker_id, distrib))
+            new_worker = asyncio.create_task(self.worker_task(worker_id, self.dist))
             self.workers.append(new_worker)
 
         # Update capacity attribute
@@ -604,9 +616,12 @@ class Hospital:
     
     async def electricity_suspension(self):
         # ICU and CCU
-        self.icu.reduce_capacity(reduction_percent=REDUCTION_PERCENT)
-        self.ccu.reduce_capacity(reduction_percent=REDUCTION_PERCENT)
-        await asyncio.sleep(electricity_suspension_hours * 3600 / SIMULATION_SPEED) # 24 hours
+        print("reducing")
+        await self.icu.reduce_capacity(reduction_percent=REDUCTION_PERCENT)
+        await self.ccu.reduce_capacity(reduction_percent=REDUCTION_PERCENT)
+        event = Event(EventType.PC_PD, _time_ = (time.time()- st)* 3600/ SIMULATION_SPEED, patient=None)
+        Section.all_events.append(event)
+        print("[Hospital] Power Outage Event!")
         
 
 class ClientGeneratorForHospital(Section):
@@ -671,14 +686,41 @@ class ClientGeneratorForHospital(Section):
         return await super().section_process()
 
 class Nature:
-    # class RIP(Section):
-        # pass
+    class RIP(Section):
+        _section_name_ = SectionType.RIP.value
+        def __init__(self, capacity: Capacity) -> None:
+            super().__init__(SectionType.RIP, capacity)
+        def decide_next_section(self, patient):
+            return super().decide_next_section(patient)
+        def section_process(self):
+            return super().section_process()
+        pass
 
     def __init__(self, targeted_hospital: Hospital, dist: Distribiutions,):
         self.running = True
+        self.hospital = targeted_hospital
+        self.dist = dist
+        self.rip = self.RIP(SECTION_CAPACITIES.get(SectionType.RIP))
 
 
     async def run(self):
         print("[Nature] Started.")
+        power_outage_day = self.dist.uniform_dist(1, 30)
+        # power_outage_day = 1
         while self.running:
+            global SIMULATION_CLOCK
+            clock = SIMULATION_CLOCK
+            days, remainder = divmod(int(clock), 86400)  # 86400 seconds in a day
+            day_in_this_month = days % 30
+            day_outage = days + power_outage_day
+            # print(f"[Nature] Next Power outage is on day {day_outage} / now is day {days + day_in_this_month}")
+            if day_in_this_month != power_outage_day:
+                await asyncio.sleep(3 * 3600 / SIMULATION_SPEED)
+                continue
+            self.hospital.electricity_suspension()
             pass
+
+    async def stop(self):
+        self.running = False
+        print("[Nature] Stopping...")
+        print("[Nature] Stopped.")

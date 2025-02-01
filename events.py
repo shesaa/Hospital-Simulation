@@ -19,7 +19,7 @@ class EventType(Enum):
 
 
 class Event:
-    def __init__(self, _type_: EventType, _time_, patient: Patient ):
+    def __init__(self, _type_: EventType, _time_, patient: Optional[Patient]= None ):
         self.event_type = _type_
         self.event_time = _time_
         self.event_patient = patient
