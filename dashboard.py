@@ -1,7 +1,7 @@
 from hospital_base import *
 import json
 import pandas as pd
-
+from tqdm import tqdm
 
 @dataclass
 class SimulationStateData:
@@ -16,8 +16,9 @@ class SimulationStateData:
 
 class Simulation:
     def __init__(self):
-        self.hospital = Hospital()
         self.dist = Distribiutions(cnfg=None)
+        Section.dist = self.dist
+        self.hospital = Hospital()
         self.client_generator = ClientGeneratorForHospital(
             targeted_hospital=self.hospital,
             dist=self.dist,
@@ -30,17 +31,18 @@ class Simulation:
     async def start(self):
         # Start hospital sections
         self.tasks.append(asyncio.create_task(self.hospital.emergency.run(self.dist)))
-        self.tasks.append(asyncio.create_task(self.hospital.ward.run(self.dist)))
-        self.tasks.append(asyncio.create_task(self.hospital.labratory.run(self.dist)))
         self.tasks.append(asyncio.create_task(self.hospital.pre_surgery.run(self.dist)))
+        self.tasks.append(asyncio.create_task(self.hospital.labratory.run(self.dist)))
         self.tasks.append(asyncio.create_task(self.hospital.operating_rooms.run(self.dist)))
+        self.tasks.append(asyncio.create_task(self.hospital.ward.run(self.dist)))
         self.tasks.append(asyncio.create_task(self.hospital.icu.run(self.dist)))
         self.tasks.append(asyncio.create_task(self.hospital.ccu.run(self.dist)))
         
         # Start client generator
-        self.tasks.append(asyncio.create_task(self.client_generator.run()))
+        self.tasks.append(asyncio.create_task(self.client_generator.run_patient_generator()))
+        # self.tasks.append(asyncio.create_task(self.client_generator.run(self.dist)))
         self.tasks.append(asyncio.create_task(self.nature.run()))
-        self.tasks.append(asyncio.create_task(self.nature.rip.run(self.dist)))
+        # self.tasks.append(asyncio.create_task(self.nature.rip.run(self.dist)))
 
         # Start state updater
         self.tasks.append(asyncio.create_task(self.update_state()))
@@ -72,7 +74,7 @@ class Simulation:
 
     async def stop(self):
         print("[Simulation] Stopping...")
-        await self.client_generator.stop()
+        await self.client_generator.stop_all()
         await self.hospital.emergency.stop()
         await self.hospital.pre_surgery.stop()
         await self.hospital.labratory.stop()
@@ -112,19 +114,6 @@ class Simulation:
             # self.state["sections_status"][section_type.value] = True
 
 
-
-
-
-
-
-
-# dashboard.py
-
-# dashboard.py
-
-# dashboard.py
-
-# dashboard.py
 
 import dash
 from dash import dcc, html, Output, Input, State, callback_context
@@ -852,7 +841,9 @@ def update_dynamic_plots(n_intervals):
         x_q, y_q = section.queue_size_time_series
         x_e, y_e = section.entity_size_time_series
         # y = [math.sin((i * j + n_intervals) * 0.1) for j in x]  # Different sine waves
-        
+        moving_avg_q = pd.Series(y_q).rolling(window=10, min_periods=1).mean()
+        moving_avg_e = pd.Series(y_e).rolling(window=10, min_periods=1).mean()
+
         figure = {
             'data': [
                 go.Scatter(
@@ -863,9 +854,9 @@ def update_dynamic_plots(n_intervals):
                     line=dict(color='cyan')
                 ),
                 go.Scatter(x=x_q,
-                    y=[np.mean(y_q)]*len(x_q),
+                    y=moving_avg_q,
                     mode='lines',
-                    name='Average',
+                    name='Moving Average',
                     line=dict(color='yellow', dash='dash')
 
                 ) 
@@ -890,9 +881,9 @@ def update_dynamic_plots(n_intervals):
                     line=dict(color='cyan')
                 ),
                 go.Scatter(x=x_e,
-                    y=[np.mean(y_e)]*len(x_e),
+                    y=moving_avg_e,
                     mode='lines',
-                    name='Average',
+                    name='Moving Average',
                     line=dict(color='yellow', dash='dash')
 
                 ) 
@@ -930,9 +921,10 @@ async def main():
 
 
 def save_things(i: int):
-    path = f'result{i}/'
+    path = f'result_A_{i}/'
+    # path = f'result{i}/'
     event_data = []
-    for event in Section.all_events:
+    for event in tqdm(Section.all_events):
         event_data.append({
             "Event Type": event.event_type.value,
             "Event Time": event.event_time,
@@ -946,7 +938,7 @@ def save_things(i: int):
 
     # 
     patient_data = []
-    for p in Section.all_patients:
+    for p in tqdm(Section.all_patients):
         total_serving_duration = 0
         total_queue_duration = 0
 
@@ -957,7 +949,7 @@ def save_things(i: int):
                 "re-surgery times": p.re_surgery_times
                 
             }
-        for sec in get_active_sections():
+        for sec in tqdm(get_active_sections()):
 
             # if sec == SectionType.WARD:
                 # print(p.section_entry_leave_time)
@@ -970,6 +962,8 @@ def save_things(i: int):
             # print(sec.value)
             try:
                 s_duration = section_entry_leave_time[1] - section_entry_leave_time[0]
+                if sec in [SectionType.EMERGENCY, SectionType.PRE_SURGERY]:
+                    s_duration += (section_entry_leave_time[3] - section_entry_leave_time[2])
                 q_duration = queue_entry_leave_time[1] - queue_entry_leave_time[0]
                 dict_p[f"{sec.value} Serving Duration"] = s_duration
                 dict_p[f"{sec.value} Queue Duration"] = q_duration
@@ -986,13 +980,13 @@ def save_things(i: int):
         pd.DataFrame(patient_data).to_excel(path+'patients.xlsx')
 
 
-        for sec in get_active_sections():
-            instance_sec = Section.__instances__.get(sec.value)
-            x,y = instance_sec.entity_size_time_series
-            x2, y2 = instance_sec.queue_size_time_series
+    for sec in tqdm(get_active_sections()):
+        instance_sec = Section.__instances__.get(sec.value)
+        x,y = instance_sec.entity_size_time_series
+        x2, y2 = instance_sec.queue_size_time_series
 
-            pd.DataFrame(y2, index=x2).to_excel(path + f'{sec.value} queue.xlsx')
-            pd.DataFrame(y, index=x).to_excel(path + f'{sec.value} entity.xlsx')
+        pd.DataFrame(y2, index=x2).to_excel(path + f'{sec.value} queue.xlsx')
+        pd.DataFrame(y, index=x).to_excel(path + f'{sec.value} entity.xlsx')
 
 
 if __name__ == "__main__":
@@ -1002,5 +996,4 @@ if __name__ == "__main__":
         print("Simulation interrupted by user.")
     
     finally:
-        save_things(5)
-            
+        save_things(1)
